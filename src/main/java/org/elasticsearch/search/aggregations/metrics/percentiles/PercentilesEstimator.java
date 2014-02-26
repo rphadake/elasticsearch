@@ -23,6 +23,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Streamable;
 import org.elasticsearch.common.lease.Releasable;
+import org.elasticsearch.common.util.ArrayUtils;
 import org.elasticsearch.search.aggregations.metrics.percentiles.tdigest.TDigest;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
 
@@ -59,6 +60,10 @@ public abstract class PercentilesEstimator implements Releasable {
 
     public abstract Result emptyResult();
 
+    static int indexOfPercent(double[] percents, double percent) {
+        return ArrayUtils.binarySearch(percents, percent, 0.001);
+    }
+
     /**
      * Responsible for merging multiple estimators into a single one.
      */
@@ -75,7 +80,7 @@ public abstract class PercentilesEstimator implements Releasable {
         protected abstract byte id();
 
         public double estimate(double percent) {
-            int i = Arrays.binarySearch(percents, percent);
+            int i = indexOfPercent(percents, percent);
             assert i >= 0;
             return estimate(i);
         }

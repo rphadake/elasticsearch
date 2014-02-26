@@ -29,7 +29,6 @@ import org.elasticsearch.search.aggregations.support.ValuesSourceConfig;
 import org.elasticsearch.search.aggregations.support.numeric.NumericValuesSource;
 
 import java.io.IOException;
-import java.util.Arrays;
 
 /**
  *
@@ -71,7 +70,7 @@ public class PercentilesAggregator extends MetricsAggregator.MultiValue {
 
     @Override
     public boolean hasMetric(String name) {
-        return Arrays.binarySearch(estimator.percents(), Double.parseDouble(name)) >= 0;
+        return PercentilesEstimator.indexOfPercent(estimator.percents, Double.parseDouble(name)) >= 0;
     }
 
     @Override
