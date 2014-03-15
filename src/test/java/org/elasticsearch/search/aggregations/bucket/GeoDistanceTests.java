@@ -21,8 +21,6 @@ package org.elasticsearch.search.aggregations.bucket;
 import com.google.common.collect.Sets;
 import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.DistanceUnit;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.search.aggregations.bucket.histogram.Histogram;
@@ -50,14 +48,6 @@ import static org.hamcrest.core.IsNull.notNullValue;
  *
  */
 public class GeoDistanceTests extends ElasticsearchIntegrationTest {
-
-    @Override
-    public Settings indexSettings() {
-        return ImmutableSettings.builder()
-                .put("index.number_of_shards", between(1, 5))
-                .put("index.number_of_replicas", between(0, 1))
-                .build();
-    }
 
     private IndexRequestBuilder indexCity(String idx, String name, String... latLons) throws Exception {
         XContentBuilder source = jsonBuilder().startObject().field("city", name);

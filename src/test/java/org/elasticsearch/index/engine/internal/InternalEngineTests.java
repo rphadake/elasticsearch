@@ -26,6 +26,7 @@ import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.IndexDeletionPolicy;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.util.Version;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
@@ -185,7 +186,7 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         return new LogByteSizeMergePolicyProvider(store, new IndexSettingsService(new Index("test"), EMPTY_SETTINGS));
     }
 
-    protected MergeSchedulerProvider<?> createMergeScheduler() {
+    protected MergeSchedulerProvider createMergeScheduler() {
         return new SerialMergeSchedulerProvider(shardId, EMPTY_SETTINGS, threadPool);
     }
 
@@ -193,7 +194,7 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         return createEngine(indexSettingsService, store, translog, createMergeScheduler());
     }
 
-    protected Engine createEngine(IndexSettingsService indexSettingsService, Store store, Translog translog, MergeSchedulerProvider<?> mergeSchedulerProvider) {
+    protected Engine createEngine(IndexSettingsService indexSettingsService, Store store, Translog translog, MergeSchedulerProvider mergeSchedulerProvider) {
         return new InternalEngine(shardId, defaultSettings, threadPool, indexSettingsService, new ShardIndexingService(shardId, EMPTY_SETTINGS, new ShardSlowLogIndexingService(shardId, EMPTY_SETTINGS, indexSettingsService)), null, store, createSnapshotDeletionPolicy(), translog, createMergePolicy(), mergeSchedulerProvider,
                 new AnalysisService(shardId.index()), new SimilarityService(shardId.index()), new CodecService(shardId.index()));
     }
@@ -308,6 +309,10 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         assertThat(segments.get(2).isCompound(), equalTo(true));
     }
 
+    static {
+        assert Version.LUCENE_47.onOrAfter(Lucene.VERSION) : "LUCENE-5481 is fixed, improve test below";
+    }
+
     @Test
     public void testSegmentsWithMergeFlag() throws Exception {
         ConcurrentMergeSchedulerProvider mergeSchedulerProvider = new ConcurrentMergeSchedulerProvider(shardId, EMPTY_SETTINGS, threadPool);
@@ -376,6 +381,20 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         for (Segment segment : engine.segments()) {
             assertThat(segment.getMergeId(), nullValue());
         }
+
+        // forcing an optimize will merge this single segment shard
+        // TODO: put a random boolean again once LUCENE-5481 is fixed
+        final boolean force = true; // randomBoolean();
+        waitTillMerge.set(new CountDownLatch(1));
+        waitForMerge.set(new CountDownLatch(1));
+        engine.optimize(new Engine.Optimize().flush(true).maxNumSegments(1).force(force).waitForMerge(false));
+        waitTillMerge.get().await();
+
+        for (Segment segment : engine.segments()) {
+            assertThat(segment.getMergeId(), force ? notNullValue() : nullValue());
+        }
+
+        waitForMerge.get().countDown();
 
         engine.close();
     }
@@ -755,7 +774,8 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         engine.create(create);
         assertThat(create.version(), equalTo(1l));
 
-        create = new Engine.Create(null, newUid("1"), doc).version(create.version()).origin(REPLICA);
+        create = new Engine.Create(null, newUid("1"), doc).version(create.version())
+                .versionType(create.versionType().versionTypeForReplicationAndRecovery()).origin(REPLICA);
         replicaEngine.create(create);
         assertThat(create.version(), equalTo(1l));
     }
@@ -767,7 +787,8 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         engine.create(create);
         assertThat(create.version(), equalTo(12l));
 
-        create = new Engine.Create(null, newUid("1"), doc).version(create.version()).origin(REPLICA);
+        create = new Engine.Create(null, newUid("1"), doc).version(create.version())
+                .versionType(create.versionType().versionTypeForReplicationAndRecovery()).origin(REPLICA);
         replicaEngine.create(create);
         assertThat(create.version(), equalTo(12l));
     }
@@ -779,7 +800,8 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         engine.index(index);
         assertThat(index.version(), equalTo(1l));
 
-        index = new Engine.Index(null, newUid("1"), doc).version(index.version()).origin(REPLICA);
+        index = new Engine.Index(null, newUid("1"), doc).version(index.version())
+                .versionType(index.versionType().versionTypeForReplicationAndRecovery()).origin(REPLICA);
         replicaEngine.index(index);
         assertThat(index.version(), equalTo(1l));
     }
@@ -791,7 +813,8 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         engine.index(index);
         assertThat(index.version(), equalTo(12l));
 
-        index = new Engine.Index(null, newUid("1"), doc).version(index.version()).origin(REPLICA);
+        index = new Engine.Index(null, newUid("1"), doc)
+                .version(index.version()).versionType(index.versionType().versionTypeForReplicationAndRecovery()).origin(REPLICA);
         replicaEngine.index(index);
         assertThat(index.version(), equalTo(12l));
     }
@@ -1052,12 +1075,13 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         assertThat(index.version(), equalTo(2l));
 
         // apply the second index to the replica, should work fine
-        index = new Engine.Index(null, newUid("1"), doc).version(2l).origin(REPLICA);
+        index = new Engine.Index(null, newUid("1"), doc).version(index.version())
+                .versionType(VersionType.INTERNAL.versionTypeForReplicationAndRecovery()).origin(REPLICA);
         replicaEngine.index(index);
         assertThat(index.version(), equalTo(2l));
 
         // now, the old one should not work
-        index = new Engine.Index(null, newUid("1"), doc).version(1l).origin(REPLICA);
+        index = new Engine.Index(null, newUid("1"), doc).version(1l).versionType(VersionType.INTERNAL.versionTypeForReplicationAndRecovery()).origin(REPLICA);
         try {
             replicaEngine.index(index);
             fail();
@@ -1067,7 +1091,8 @@ public class InternalEngineTests extends ElasticsearchTestCase {
 
         // second version on replica should fail as well
         try {
-            index = new Engine.Index(null, newUid("1"), doc).version(2l).origin(REPLICA);
+            index = new Engine.Index(null, newUid("1"), doc).version(2l)
+                    .versionType(VersionType.INTERNAL.versionTypeForReplicationAndRecovery()).origin(REPLICA);
             replicaEngine.index(index);
             assertThat(index.version(), equalTo(2l));
         } catch (VersionConflictEngineException e) {
@@ -1083,7 +1108,8 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         assertThat(index.version(), equalTo(1l));
 
         // apply the first index to the replica, should work fine
-        index = new Engine.Index(null, newUid("1"), doc).version(1l).origin(REPLICA);
+        index = new Engine.Index(null, newUid("1"), doc).version(1l)
+                .versionType(VersionType.INTERNAL.versionTypeForReplicationAndRecovery()).origin(REPLICA);
         replicaEngine.index(index);
         assertThat(index.version(), equalTo(1l));
 
@@ -1098,24 +1124,27 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         assertThat(delete.version(), equalTo(3l));
 
         // apply the delete on the replica (skipping the second index)
-        delete = new Engine.Delete("test", "1", newUid("1")).version(3l).origin(REPLICA);
+        delete = new Engine.Delete("test", "1", newUid("1")).version(3l)
+                .versionType(VersionType.INTERNAL.versionTypeForReplicationAndRecovery()).origin(REPLICA);
         replicaEngine.delete(delete);
         assertThat(delete.version(), equalTo(3l));
 
         // second time delete with same version should fail
         try {
-            delete = new Engine.Delete("test", "1", newUid("1")).version(3l).origin(REPLICA);
+            delete = new Engine.Delete("test", "1", newUid("1")).version(3l)
+                    .versionType(VersionType.INTERNAL.versionTypeForReplicationAndRecovery()).origin(REPLICA);
             replicaEngine.delete(delete);
-            assertThat(delete.version(), equalTo(3l));
+            fail("excepted VersionConflictEngineException to be thrown");
         } catch (VersionConflictEngineException e) {
             // all is well
         }
 
         // now do the second index on the replica, it should fail
         try {
-            index = new Engine.Index(null, newUid("1"), doc).version(2l).origin(REPLICA);
+            index = new Engine.Index(null, newUid("1"), doc).version(2l)
+                    .versionType(VersionType.INTERNAL.versionTypeForReplicationAndRecovery()).origin(REPLICA);
             replicaEngine.index(index);
-            assertThat(index.version(), equalTo(2l));
+            fail("excepted VersionConflictEngineException to be thrown");
         } catch (VersionConflictEngineException e) {
             // all is well
         }

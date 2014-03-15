@@ -24,25 +24,26 @@ import org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.client.Client;
-import org.elasticsearch.common.Priority;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.junit.Test;
 
+import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_REPLICAS;
 import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilder;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.hamcrest.Matchers.*;
 
 public class SearchPreferenceTests extends ElasticsearchIntegrationTest {
 
     @Test // see #2896
     public void testStopOneNodePreferenceWithRedState() throws InterruptedException {
-        client().admin().indices().prepareCreate("test").setSettings(settingsBuilder().put("index.number_of_shards", cluster().size()+2).put("index.number_of_replicas", 0)).execute().actionGet();
-        client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID).setWaitForGreenStatus().execute().actionGet();
+        assertAcked(prepareCreate("test").setSettings(settingsBuilder().put("index.number_of_shards", cluster().dataNodes()+2).put("index.number_of_replicas", 0)));
+        ensureGreen();
         for (int i = 0; i < 10; i++) {
             client().prepareIndex("test", "type1", ""+i).setSource("field1", "value1").execute().actionGet();
         }
-        client().admin().indices().prepareRefresh().execute().actionGet();
+        refresh();
         cluster().stopRandomNode();
         client().admin().cluster().prepareHealth().setWaitForStatus(ClusterHealthStatus.RED).execute().actionGet();
         String[] preferences = new String[] {"_primary", "_local", "_primary_first", "_only_local", "_prefer_node:somenode", "_prefer_node:server2"};
@@ -55,15 +56,17 @@ public class SearchPreferenceTests extends ElasticsearchIntegrationTest {
             assertThat(pref, searchResponse.getFailedShards(), greaterThanOrEqualTo(0));
         }
     }
-    
 
     @Test
     public void noPreferenceRandom() throws Exception {
-        client().admin().indices().prepareCreate("test").setSettings(settingsBuilder().put("index.number_of_shards", 1).put("index.number_of_replicas", 1)).execute().actionGet();
+        assertAcked(prepareCreate("test").setSettings(
+                //this test needs at least a replica to make sure two consecutive searches go to two different copies of the same data
+                settingsBuilder().put(indexSettings()).put(SETTING_NUMBER_OF_REPLICAS, between(1, maximumNumberOfReplicas()))
+        ));
         ensureGreen();
         
         client().prepareIndex("test", "type1").setSource("field1", "value1").execute().actionGet();
-        client().admin().indices().prepareRefresh().execute().actionGet();
+        refresh();
 
         final Client client = cluster().smartClient();
         SearchResponse searchResponse = client.prepareSearch("test").setQuery(matchAllQuery()).execute().actionGet();
@@ -77,10 +80,10 @@ public class SearchPreferenceTests extends ElasticsearchIntegrationTest {
     @Test
     public void simplePreferenceTests() throws Exception {
         createIndex("test");
-        client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID).setWaitForGreenStatus().execute().actionGet();
+        ensureGreen();
 
         client().prepareIndex("test", "type1").setSource("field1", "value1").execute().actionGet();
-        client().admin().indices().prepareRefresh().execute().actionGet();
+        refresh();
 
         SearchResponse searchResponse = client().prepareSearch().setQuery(matchAllQuery()).setPreference("_local").execute().actionGet();
         assertThat(searchResponse.getHits().totalHits(), equalTo(1l));

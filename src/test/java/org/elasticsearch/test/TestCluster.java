@@ -95,7 +95,7 @@ public final class TestCluster implements Iterable<Client> {
      * A boolean value to enable or disable mock modules. This is useful to test the
      * system without asserting modules that to make sure they don't hide any bugs in
      * production.
-     * 
+     *
      * @see ElasticsearchIntegrationTest
      */
     public static final String TESTS_ENABLE_MOCK_MODULES = "tests.enable_mock_modules";
@@ -167,10 +167,10 @@ public final class TestCluster implements Iterable<Client> {
 
         assert numSharedNodes >= 0;
         /*
-         *  TODO 
+         *  TODO
          *  - we might want start some master only nodes?
          *  - we could add a flag that returns a client to the master all the time?
-         *  - we could add a flag that never returns a client to the master 
+         *  - we could add a flag that never returns a client to the master
          *  - along those lines use a dedicated node that is master eligible and let all other nodes be only data nodes
          */
         sharedNodesSeeds = new long[numSharedNodes];
@@ -266,6 +266,7 @@ public final class TestCluster implements Iterable<Client> {
                 }
             }
         }
+        builder.put("plugins.isolation", random.nextBoolean());
         return builder.build();
     }
 
@@ -344,7 +345,7 @@ public final class TestCluster implements Iterable<Client> {
         // prevent killing the master if possible
         final Iterator<NodeAndClient> values = n == 0 ? nodes.values().iterator() : Iterators.filter(nodes.values().iterator(), Predicates.not(new MasterNodePredicate(getMasterName())));
         final Iterator<NodeAndClient> limit = Iterators.limit(values, nodes.size() - n);
-        logger.info("reducing cluster size from {} to {}", nodes.size() - n, n);
+        logger.info("changing cluster size from {} to {}", nodes.size() - n, n);
         Set<NodeAndClient> nodesToRemove = new HashSet<NodeAndClient>();
         while (limit.hasNext()) {
             NodeAndClient next = limit.next();
@@ -644,7 +645,7 @@ public final class TestCluster implements Iterable<Client> {
             if (nextDouble < transportClientRatio) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("Using transport client for node [{}] sniff: [{}]", node.settings().get("name"), false);
-                } 
+                }
                 /* no sniff client for now - doesn't work will all tests since it might throw NoNodeAvailableException if nodes are shut down.
                  * we first need support of transportClientRatio as annotations or so
                  */
@@ -833,7 +834,6 @@ public final class TestCluster implements Iterable<Client> {
             nodeAndClient.close();
         }
     }
-
 
     /**
      * Stops the current master node forcefully
@@ -1028,13 +1028,26 @@ public final class TestCluster implements Iterable<Client> {
             dataDirToClean.addAll(Arrays.asList(nodeEnv.nodeDataLocations()));
         }
         nodes.put(nodeAndClient.name, nodeAndClient);
-
     }
 
     public void closeNonSharedNodes(boolean wipeData) {
         reset(random, wipeData, transportClientRatio);
     }
 
+    public int dataNodes() {
+        return dataNodeAndClients().size();
+    }
+
+    private Collection<NodeAndClient> dataNodeAndClients() {
+        return Collections2.filter(nodes.values(), new DataNodePredicate());
+    }
+
+    private static final class DataNodePredicate implements Predicate<NodeAndClient> {
+        @Override
+        public boolean apply(NodeAndClient nodeAndClient) {
+            return nodeAndClient.node.settings().getAsBoolean("node.data", true);
+        }
+    }
 
     private static final class MasterNodePredicate implements Predicate<NodeAndClient> {
         private final String masterNodeName;

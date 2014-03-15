@@ -48,7 +48,6 @@ import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
-import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.analysis.AnalysisService;
 import org.elasticsearch.index.codec.CodecService;
 import org.elasticsearch.index.deletionpolicy.SnapshotDeletionPolicy;
@@ -56,8 +55,9 @@ import org.elasticsearch.index.deletionpolicy.SnapshotIndexCommit;
 import org.elasticsearch.index.engine.*;
 import org.elasticsearch.index.indexing.ShardIndexingService;
 import org.elasticsearch.index.mapper.Uid;
+import org.elasticsearch.index.merge.Merges;
 import org.elasticsearch.index.merge.OnGoingMerge;
-import org.elasticsearch.index.merge.policy.IndexUpgraderMergePolicy;
+import org.elasticsearch.index.merge.policy.ElasticsearchMergePolicy;
 import org.elasticsearch.index.merge.policy.MergePolicyProvider;
 import org.elasticsearch.index.merge.scheduler.MergeSchedulerProvider;
 import org.elasticsearch.index.search.nested.IncludeNestedDocsQuery;
@@ -416,23 +416,14 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
             // same logic as index
             long updatedVersion;
             long expectedVersion = create.version();
-            if (create.origin() == Operation.Origin.PRIMARY) {
-                if (create.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+            if (create.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+                if (create.origin() == Operation.Origin.RECOVERY) {
+                    return;
+                } else {
                     throw new VersionConflictEngineException(shardId, create.type(), create.id(), currentVersion, expectedVersion);
                 }
-                updatedVersion = create.versionType().updateVersion(currentVersion, expectedVersion);
-            } else { // if (index.origin() == Operation.Origin.REPLICA || index.origin() == Operation.Origin.RECOVERY) {
-                // replicas treat the version as "external" as it comes from the primary ->
-                // only exploding if the version they got is lower or equal to what they know.
-                if (VersionType.EXTERNAL.isVersionConflict(currentVersion, expectedVersion)) {
-                    if (create.origin() == Operation.Origin.RECOVERY) {
-                        return;
-                    } else {
-                        throw new VersionConflictEngineException(shardId, create.type(), create.id(), currentVersion, expectedVersion);
-                    }
-                }
-                updatedVersion = VersionType.EXTERNAL.updateVersion(currentVersion, expectedVersion);
             }
+            updatedVersion = create.versionType().updateVersion(currentVersion, expectedVersion);
 
             // if the doc does not exists or it exists but not delete
             if (versionValue != null) {
@@ -512,25 +503,15 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
 
             long updatedVersion;
             long expectedVersion = index.version();
-            if (index.origin() == Operation.Origin.PRIMARY) {
-                if (index.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+            if (index.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+                if (index.origin() == Operation.Origin.RECOVERY) {
+                    return;
+                } else {
                     throw new VersionConflictEngineException(shardId, index.type(), index.id(), currentVersion, expectedVersion);
                 }
-
-                updatedVersion = index.versionType().updateVersion(currentVersion, expectedVersion);
-
-            } else { // if (index.origin() == Operation.Origin.REPLICA || index.origin() == Operation.Origin.RECOVERY) {
-                // replicas treat the version as "external" as it comes from the primary ->
-                // only exploding if the version they got is lower or equal to what they know.
-                if (VersionType.EXTERNAL.isVersionConflict(currentVersion, expectedVersion)) {
-                    if (index.origin() == Operation.Origin.RECOVERY) {
-                        return;
-                    } else {
-                        throw new VersionConflictEngineException(shardId, index.type(), index.id(), currentVersion, expectedVersion);
-                    }
-                }
-                updatedVersion = VersionType.EXTERNAL.updateVersion(currentVersion, expectedVersion);
             }
+            updatedVersion = index.versionType().updateVersion(currentVersion, expectedVersion);
+
 
             index.version(updatedVersion);
             if (currentVersion == Versions.NOT_FOUND) {
@@ -603,25 +584,14 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
 
             long updatedVersion;
             long expectedVersion = delete.version();
-            if (delete.origin() == Operation.Origin.PRIMARY) {
-                if (delete.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+            if (delete.versionType().isVersionConflict(currentVersion, expectedVersion)) {
+                if (delete.origin() == Operation.Origin.RECOVERY) {
+                    return;
+                } else {
                     throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), currentVersion, expectedVersion);
                 }
-
-                updatedVersion = delete.versionType().updateVersion(currentVersion, expectedVersion);
-
-            } else { // if (index.origin() == Operation.Origin.REPLICA || index.origin() == Operation.Origin.RECOVERY) {
-                // replicas treat the version as "external" as it comes from the primary ->
-                // only exploding if the version they got is lower or equal to what they know.
-                if (VersionType.EXTERNAL.isVersionConflict(currentVersion, expectedVersion)) {
-                    if (delete.origin() == Operation.Origin.RECOVERY) {
-                        return;
-                    } else {
-                        throw new VersionConflictEngineException(shardId, delete.type(), delete.id(), currentVersion - 1, expectedVersion);
-                    }
-                }
-                updatedVersion = VersionType.EXTERNAL.updateVersion(currentVersion, expectedVersion);
             }
+            updatedVersion = delete.versionType().updateVersion(currentVersion, expectedVersion);
 
             if (currentVersion == Versions.NOT_FOUND) {
                 // doc does not exists and no prior deletes
@@ -947,7 +917,7 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
         rwl.readLock().lock();
         try {
             ensureOpen();
-            indexWriter.maybeMerge();
+            Merges.maybeMerge(indexWriter);
         } catch (OutOfMemoryError e) {
             failEngine(e);
             throw new OptimizeFailedEngineException(shardId, e);
@@ -969,16 +939,35 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
             flush(new Flush().force(true).waitIfOngoing(true));
         }
         if (optimizeMutex.compareAndSet(false, true)) {
+            ElasticsearchMergePolicy elasticsearchMergePolicy = null;
             rwl.readLock().lock();
             try {
                 ensureOpen();
+
+                if (indexWriter.getConfig().getMergePolicy() instanceof ElasticsearchMergePolicy) {
+                    elasticsearchMergePolicy = (ElasticsearchMergePolicy) indexWriter.getConfig().getMergePolicy();
+                }
+                if (optimize.force() && elasticsearchMergePolicy == null) {
+                    throw new ElasticsearchIllegalStateException("The `force` flag can only be used if the merge policy is an instance of "
+                            + ElasticsearchMergePolicy.class.getSimpleName() + ", got [" + indexWriter.getConfig().getMergePolicy().getClass().getName() + "]");
+                }
+
+                /*
+                 * The way we implement "forced forced merges" is a bit hackish in the sense that we set an instance variable and that this
+                 * setting will thus apply to all forced merges that will be run until `force` is set back to false. However, since
+                 * InternalEngine.optimize is the only place in code where we call forceMerge and since calls are protected with
+                 * `optimizeMutex`, this has the expected behavior.
+                 */
+                if (optimize.force()) {
+                    elasticsearchMergePolicy.setForce(true);
+                }
                 if (optimize.onlyExpungeDeletes()) {
-                    indexWriter.forceMergeDeletes(false);
+                    Merges.forceMergeDeletes(indexWriter, false);
                 } else if (optimize.maxNumSegments() <= 0) {
-                    indexWriter.maybeMerge();
+                    Merges.maybeMerge(indexWriter);
                     possibleMergeNeeded = false;
                 } else {
-                    indexWriter.forceMerge(optimize.maxNumSegments(), false);
+                    Merges.forceMerge(indexWriter, optimize.maxNumSegments(), false);
                 }
             } catch (OutOfMemoryError e) {
                 failEngine(e);
@@ -991,6 +980,9 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
             } catch (Throwable e) {
                 throw new OptimizeFailedEngineException(shardId, e);
             } finally {
+                if (elasticsearchMergePolicy != null) {
+                    elasticsearchMergePolicy.setForce(false);
+                }
                 rwl.readLock().unlock();
                 optimizeMutex.set(false);
             }
@@ -1292,7 +1284,7 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
                 }
             }
         } catch (Throwable e) {
-            logger.debug("failed to rollback writer on close", e);
+            logger.warn("failed to rollback writer on close", e);
         } finally {
             indexWriter = null;
         }
@@ -1350,7 +1342,7 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
             MergePolicy mergePolicy = mergePolicyProvider.newMergePolicy();
             // Give us the opportunity to upgrade old segments while performing
             // background merges
-            mergePolicy = new IndexUpgraderMergePolicy(mergePolicy);
+            mergePolicy = new ElasticsearchMergePolicy(mergePolicy);
             config.setMergePolicy(mergePolicy);
             config.setSimilarity(similarityService.similarity());
             config.setRAMBufferSizeMB(indexingBufferSize.mbFrac());
@@ -1638,4 +1630,5 @@ public class InternalEngine extends AbstractIndexShardComponent implements Engin
             return ongoingRecoveries;
         }
     }
+
 }

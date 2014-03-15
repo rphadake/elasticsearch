@@ -33,7 +33,6 @@ import org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus;
 import org.elasticsearch.action.admin.cluster.node.stats.NodeStats;
 import org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateResponse;
-import org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheResponse;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequestBuilder;
 import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse;
 import org.elasticsearch.action.admin.indices.flush.FlushResponse;
@@ -61,6 +60,10 @@ import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.mapper.FieldMapper.Loading;
 import org.elasticsearch.index.merge.policy.*;
+import org.elasticsearch.index.merge.scheduler.ConcurrentMergeSchedulerProvider;
+import org.elasticsearch.index.merge.scheduler.MergeSchedulerModule;
+import org.elasticsearch.index.merge.scheduler.MergeSchedulerProvider;
+import org.elasticsearch.index.merge.scheduler.SerialMergeSchedulerProvider;
 import org.elasticsearch.indices.IndexMissingException;
 import org.elasticsearch.indices.IndexTemplateMissingException;
 import org.elasticsearch.repositories.RepositoryMissingException;
@@ -82,6 +85,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 
+import static org.elasticsearch.cluster.metadata.IndexMetaData.*;
 import static org.elasticsearch.test.TestCluster.clusterName;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
@@ -295,8 +299,10 @@ public abstract class ElasticsearchIntegrationTest extends ElasticsearchTestCase
             client().admin().indices().preparePutTemplate("random_index_template")
                     .setTemplate("*")
                     .setOrder(0)
-                    .setSettings(setRandomNormsLoading(setRandomMergePolicy(getRandom(), ImmutableSettings.builder())
-                            .put(INDEX_SEED_SETTING, randomLong())))
+                    .setSettings(setRandomNormsLoading(setRandomMerge(getRandom(), ImmutableSettings.builder())
+                            .put(INDEX_SEED_SETTING, randomLong()))
+                            .put(SETTING_NUMBER_OF_SHARDS, between(DEFAULT_MIN_NUM_SHARDS, DEFAULT_MAX_NUM_SHARDS))
+                            .put(SETTING_NUMBER_OF_REPLICAS, between(0, 1)))
                     .execute().actionGet();
         }
     }
@@ -308,24 +314,38 @@ public abstract class ElasticsearchIntegrationTest extends ElasticsearchTestCase
         return builder;
     }
 
-    private static ImmutableSettings.Builder setRandomMergePolicy(Random random, ImmutableSettings.Builder builder) {
+    private static ImmutableSettings.Builder setRandomMerge(Random random, ImmutableSettings.Builder builder) {
         if (random.nextBoolean()) {
             builder.put(AbstractMergePolicyProvider.INDEX_COMPOUND_FORMAT,
                     random.nextBoolean() ? random.nextDouble() : random.nextBoolean());
         }
-        Class<? extends MergePolicyProvider<?>> clazz = TieredMergePolicyProvider.class;
+        Class<? extends MergePolicyProvider<?>> mergePolicy = TieredMergePolicyProvider.class;
         switch (random.nextInt(5)) {
             case 4:
-                clazz = LogByteSizeMergePolicyProvider.class;
+                mergePolicy = LogByteSizeMergePolicyProvider.class;
                 break;
             case 3:
-                clazz = LogDocMergePolicyProvider.class;
+                mergePolicy = LogDocMergePolicyProvider.class;
                 break;
             case 0:
-                return builder; // don't set the setting at all
+                mergePolicy = null;
         }
-        assert clazz != null;
-        builder.put(MergePolicyModule.MERGE_POLICY_TYPE_KEY, clazz.getName());
+        if (mergePolicy != null) {
+            builder.put(MergePolicyModule.MERGE_POLICY_TYPE_KEY, mergePolicy.getName());
+        }
+
+        if (random.nextBoolean()) {
+            builder.put(MergeSchedulerProvider.FORCE_ASYNC_MERGE, random.nextBoolean());
+        }
+        switch (random.nextInt(5)) {
+            case 4:
+                builder.put(MergeSchedulerModule.MERGE_SCHEDULER_TYPE_KEY, SerialMergeSchedulerProvider.class.getName());
+                break;
+            case 3:
+                builder.put(MergeSchedulerModule.MERGE_SCHEDULER_TYPE_KEY, ConcurrentMergeSchedulerProvider.class.getName());
+                break;
+        }
+
         return builder;
     }
 
@@ -333,13 +353,50 @@ public abstract class ElasticsearchIntegrationTest extends ElasticsearchTestCase
         return cluster();
     }
 
+    protected static final int DEFAULT_MIN_NUM_SHARDS = 1;
+    protected static final int DEFAULT_MAX_NUM_SHARDS = 10;
+
+    protected int minimumNumberOfShards() {
+        return DEFAULT_MIN_NUM_SHARDS;
+    }
+
+    protected int maximumNumberOfShards() {
+        return DEFAULT_MAX_NUM_SHARDS;
+    }
+
+    protected int numberOfShards() {
+        return between(minimumNumberOfShards(), maximumNumberOfShards());
+    }
+
+    protected int minimumNumberOfReplicas() {
+        return 0;
+    }
+
+    protected int maximumNumberOfReplicas() {
+        return cluster().dataNodes() - 1;
+    }
+
+    protected int numberOfReplicas() {
+        return between(minimumNumberOfReplicas(), maximumNumberOfReplicas());
+    }
+
     /**
      * Returns a settings object used in {@link #createIndex(String...)} and {@link #prepareCreate(String)} and friends.
      * This method can be overwritten by subclasses to set defaults for the indices that are created by the test.
-     * By default it returns an empty settings object.
+     * By default it returns a settings object that sets a random number of shards. Number of shards and replicas
+     * can be controlled through specific methods.
      */
     public Settings indexSettings() {
-        return ImmutableSettings.EMPTY;
+        ImmutableSettings.Builder builder = ImmutableSettings.builder();
+        int numberOfShards = numberOfShards();
+        if (numberOfShards > 0) {
+            builder.put(SETTING_NUMBER_OF_SHARDS, numberOfShards).build();
+        }
+        int numberOfReplicas = numberOfReplicas();
+        if (numberOfReplicas >= 0) {
+            builder.put(SETTING_NUMBER_OF_REPLICAS, numberOfReplicas).build();
+        }
+        return builder.build();
     }
 
     /**
@@ -475,10 +532,11 @@ public abstract class ElasticsearchIntegrationTest extends ElasticsearchTestCase
      * rules based on <code>index.routing.allocation.exclude._name</code>.
      * </p>
      */
-    public CreateIndexRequestBuilder prepareCreate(String index, int numNodes, ImmutableSettings.Builder builder) {
+    public CreateIndexRequestBuilder prepareCreate(String index, int numNodes, ImmutableSettings.Builder settingsBuilder) {
         cluster().ensureAtLeastNumNodes(numNodes);
-        Settings settings = indexSettings();
-        builder.put(settings);
+
+        ImmutableSettings.Builder builder = ImmutableSettings.builder().put(indexSettings()).put(settingsBuilder.build());
+
         if (numNodes > 0) {
             getExcludeSettings(index, numNodes, builder);
         }
@@ -672,7 +730,7 @@ public abstract class ElasticsearchIntegrationTest extends ElasticsearchTestCase
      */
     protected OptimizeResponse optimize() {
         waitForRelocation();
-        OptimizeResponse actionGet = client().admin().indices().prepareOptimize().execute().actionGet();
+        OptimizeResponse actionGet = client().admin().indices().prepareOptimize().setForce(randomBoolean()).execute().actionGet();
         assertNoFailures(actionGet);
         return actionGet;
     }
@@ -1014,4 +1072,25 @@ public abstract class ElasticsearchIntegrationTest extends ElasticsearchTestCase
         return randomFrom(Arrays.asList("paged_bytes", "fst", "doc_values"));
     }
 
+    protected NumShards getNumShards(String index) {
+        MetaData metaData = client().admin().cluster().prepareState().get().getState().metaData();
+        assertThat(metaData.hasIndex(index), equalTo(true));
+        int numShards = Integer.valueOf(metaData.index(index).settings().get(SETTING_NUMBER_OF_SHARDS));
+        int numReplicas = Integer.valueOf(metaData.index(index).settings().get(SETTING_NUMBER_OF_REPLICAS));
+        return new NumShards(numShards, numReplicas);
+    }
+
+    protected static class NumShards {
+        public final int numPrimaries;
+        public final int numReplicas;
+        public final int totalNumShards;
+        public final int dataCopies;
+
+        private NumShards(int numPrimaries, int numReplicas) {
+            this.numPrimaries = numPrimaries;
+            this.numReplicas = numReplicas;
+            this.dataCopies = numReplicas + 1;
+            this.totalNumShards = numPrimaries * dataCopies;
+        }
+    }
 }

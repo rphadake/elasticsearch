@@ -107,12 +107,14 @@ public class DeleteByQueryTests extends ElasticsearchIntegrationTest {
                 .setQuery(QueryBuilders.hasChildQuery("type", QueryBuilders.matchAllQuery()))
                 .execute().actionGet();
 
+        NumShards twitter = getNumShards("twitter");
+
         assertThat(response.status(), equalTo(RestStatus.BAD_REQUEST));
         assertThat(response.getIndex("twitter").getSuccessfulShards(), equalTo(0));
-        assertThat(response.getIndex("twitter").getFailedShards(), equalTo(5));
+        assertThat(response.getIndex("twitter").getFailedShards(), equalTo(twitter.numPrimaries));
         assertThat(response.getIndices().size(), equalTo(1));
-        assertThat(response.getIndices().get("twitter").getFailedShards(), equalTo(5));
-        assertThat(response.getIndices().get("twitter").getFailures().length, equalTo(5));
+        assertThat(response.getIndices().get("twitter").getFailedShards(), equalTo(twitter.numPrimaries));
+        assertThat(response.getIndices().get("twitter").getFailures().length, equalTo(twitter.numPrimaries));
         for (ShardOperationFailedException failure : response.getIndices().get("twitter").getFailures()) {
             assertThat(failure.reason(), containsString("[twitter] [has_child] No mapping for for type [type]"));
             assertThat(failure.status(), equalTo(RestStatus.BAD_REQUEST));
@@ -123,7 +125,7 @@ public class DeleteByQueryTests extends ElasticsearchIntegrationTest {
     @Test
     public void testDeleteByFieldQuery() throws Exception {
         client().admin().indices().prepareCreate("test").execute().actionGet();
-        int numDocs = atLeast(10);
+        int numDocs = scaledRandomIntBetween(10, 100);
         for (int i = 0; i < numDocs; i++) {
             client().prepareIndex("test", "test", Integer.toString(i))
                     .setRouting(randomAsciiOfLengthBetween(1, 5))

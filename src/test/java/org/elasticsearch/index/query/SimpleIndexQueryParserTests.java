@@ -29,6 +29,7 @@ import org.apache.lucene.search.spans.*;
 import org.apache.lucene.spatial.prefix.IntersectsPrefixTreeFilter;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
+import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.cache.recycler.CacheRecyclerModule;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.bytes.BytesArray;
@@ -1307,8 +1308,8 @@ public class SimpleIndexQueryParserTests extends ElasticsearchTestCase {
         Query parsedQuery = queryParser.parse(filteredQuery(termQuery("name.first", "shay"), termsFilter("name.last", "banon", "kimchy"))).query();
         assertThat(parsedQuery, instanceOf(XFilteredQuery.class));
         XFilteredQuery filteredQuery = (XFilteredQuery) parsedQuery;
-        assertThat(filteredQuery.getFilter(), instanceOf(TermsFilter.class));
-        TermsFilter termsFilter = (TermsFilter) filteredQuery.getFilter();
+        assertThat(filteredQuery.getFilter(), instanceOf(XTermsFilter.class));
+        XTermsFilter termsFilter = (XTermsFilter) filteredQuery.getFilter();
         //assertThat(termsFilter.getTerms().length, equalTo(2));
         //assertThat(termsFilter.getTerms()[0].text(), equalTo("banon"));
     }
@@ -1321,8 +1322,8 @@ public class SimpleIndexQueryParserTests extends ElasticsearchTestCase {
         Query parsedQuery = queryParser.parse(query).query();
         assertThat(parsedQuery, instanceOf(XFilteredQuery.class));
         XFilteredQuery filteredQuery = (XFilteredQuery) parsedQuery;
-        assertThat(filteredQuery.getFilter(), instanceOf(TermsFilter.class));
-        TermsFilter termsFilter = (TermsFilter) filteredQuery.getFilter();
+        assertThat(filteredQuery.getFilter(), instanceOf(XTermsFilter.class));
+        XTermsFilter termsFilter = (XTermsFilter) filteredQuery.getFilter();
         //assertThat(termsFilter.getTerms().length, equalTo(2));
         //assertThat(termsFilter.getTerms()[0].text(), equalTo("banon"));
     }
@@ -1335,8 +1336,8 @@ public class SimpleIndexQueryParserTests extends ElasticsearchTestCase {
         assertThat(parsedQuery.namedFilters().containsKey("test"), equalTo(true));
         assertThat(parsedQuery.query(), instanceOf(XFilteredQuery.class));
         XFilteredQuery filteredQuery = (XFilteredQuery) parsedQuery.query();
-        assertThat(filteredQuery.getFilter(), instanceOf(TermsFilter.class));
-        TermsFilter termsFilter = (TermsFilter) filteredQuery.getFilter();
+        assertThat(filteredQuery.getFilter(), instanceOf(XTermsFilter.class));
+        XTermsFilter termsFilter = (XTermsFilter) filteredQuery.getFilter();
         //assertThat(termsFilter.getTerms().length, equalTo(2));
         //assertThat(termsFilter.getTerms()[0].text(), equalTo("banon"));
     }
@@ -1674,7 +1675,41 @@ public class SimpleIndexQueryParserTests extends ElasticsearchTestCase {
         IndexQueryParserService queryParser = queryParser();
         Query parsedQuery = queryParser.parse(fuzzyLikeThisQuery("name.first", "name.last").likeText("something").maxQueryTerms(12)).query();
         assertThat(parsedQuery, instanceOf(FuzzyLikeThisQuery.class));
-//        FuzzyLikeThisQuery fuzzyLikeThisQuery = (FuzzyLikeThisQuery) parsedQuery;
+        parsedQuery = queryParser.parse(fuzzyLikeThisQuery("name.first", "name.last").likeText("something").maxQueryTerms(12).fuzziness(Fuzziness.build("4"))).query();
+        assertThat(parsedQuery, instanceOf(FuzzyLikeThisQuery.class));
+
+        Query parsedQuery1 = queryParser.parse(fuzzyLikeThisQuery("name.first", "name.last").likeText("something").maxQueryTerms(12).fuzziness(Fuzziness.build("4.0"))).query();
+        assertThat(parsedQuery1, instanceOf(FuzzyLikeThisQuery.class));
+        assertThat(parsedQuery, equalTo(parsedQuery1));
+
+        try {
+            queryParser.parse(fuzzyLikeThisQuery("name.first", "name.last").likeText("something").maxQueryTerms(12).fuzziness(Fuzziness.build("4.1"))).query();
+            fail("exception expected - fractional edit distance");
+        } catch (ElasticsearchException ex) {
+           //
+        }
+
+        try {
+            queryParser.parse(fuzzyLikeThisQuery("name.first", "name.last").likeText("something").maxQueryTerms(12).fuzziness(Fuzziness.build("-" + between(1, 100)))).query();
+            fail("exception expected - negative edit distance");
+        } catch (ElasticsearchException ex) {
+            //
+        }
+        String[] queries = new String[] {
+                "{\"flt\": {\"fields\": [\"comment\"], \"like_text\": \"FFFdfds\",\"fuzziness\": \"4\"}}",
+                "{\"flt\": {\"fields\": [\"comment\"], \"like_text\": \"FFFdfds\",\"fuzziness\": \"4.00000000\"}}",
+                "{\"flt\": {\"fields\": [\"comment\"], \"like_text\": \"FFFdfds\",\"fuzziness\": \"4.\"}}",
+                "{\"flt\": {\"fields\": [\"comment\"], \"like_text\": \"FFFdfds\",\"fuzziness\": 4}}",
+                "{\"flt\": {\"fields\": [\"comment\"], \"like_text\": \"FFFdfds\",\"fuzziness\": 4.0}}"
+        };
+        int iters = scaledRandomIntBetween(5, 100);
+        for (int i = 0; i < iters; i++) {
+            parsedQuery = queryParser.parse(new BytesArray((String) randomFrom(queries))).query();
+            parsedQuery1 = queryParser.parse(new BytesArray((String) randomFrom(queries))).query();
+            assertThat(parsedQuery1, instanceOf(FuzzyLikeThisQuery.class));
+            assertThat(parsedQuery, instanceOf(FuzzyLikeThisQuery.class));
+            assertThat(parsedQuery, equalTo(parsedQuery1));
+        }
     }
 
     @Test
@@ -2038,6 +2073,29 @@ public class SimpleIndexQueryParserTests extends ElasticsearchTestCase {
         assertThat(filter.points()[2].lon(), closeTo(-90, 0.00001));
     }
 
+
+    @Test
+    public void testGeoPolygonFilterParsingExceptions() throws IOException {
+        String[] brokenFiles = new String[]{
+                "/org/elasticsearch/index/query/geo_polygon_exception_1.json",
+                "/org/elasticsearch/index/query/geo_polygon_exception_2.json",
+                "/org/elasticsearch/index/query/geo_polygon_exception_3.json",
+                "/org/elasticsearch/index/query/geo_polygon_exception_4.json",
+                "/org/elasticsearch/index/query/geo_polygon_exception_5.json"
+        };
+        for (String brokenFile : brokenFiles) {
+            IndexQueryParserService queryParser = queryParser();
+            String query = copyToStringFromClasspath(brokenFile);
+            try {
+                queryParser.parse(query).query();
+                fail("parsing a broken geo_polygon filter didn't fail as expected while parsing: " + brokenFile);
+            } catch (QueryParsingException e) {
+                // success!
+            }
+        }
+    }
+
+
     @Test
     public void testGeoPolygonFilter1() throws IOException {
         IndexQueryParserService queryParser = queryParser();
@@ -2181,7 +2239,7 @@ public class SimpleIndexQueryParserTests extends ElasticsearchTestCase {
         Query parsedQuery = queryParser.parse(query).query();
         assertThat((double) (parsedQuery.getBoost()), Matchers.closeTo(3.0, 1.e-7));
     }
-    
+
     @Test
     public void testBadTypeMatchQuery() throws Exception {
         IndexQueryParserService queryParser = queryParser();
@@ -2193,7 +2251,7 @@ public class SimpleIndexQueryParserTests extends ElasticsearchTestCase {
             expectedException = qpe;
         }
         assertThat(expectedException, notNullValue());
-    }     
+    }
 
     @Test
     public void testMultiMatchQuery() throws Exception {

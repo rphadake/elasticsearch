@@ -113,8 +113,6 @@ public class DateHistogramParser implements Aggregator.Parser {
                     preZone = parseZone(parser.text());
                 } else if ("pre_zone".equals(currentFieldName) || "preZone".equals(currentFieldName)) {
                     preZone = parseZone(parser.text());
-                } else if ("pre_zone_adjust_large_interval".equals(currentFieldName) || "preZoneAdjustLargeInterval".equals(currentFieldName)) {
-                    preZoneAdjustLargeInterval = parser.booleanValue();
                 } else if ("post_zone".equals(currentFieldName) || "postZone".equals(currentFieldName)) {
                     postZone = parseZone(parser.text());
                 } else if ("pre_offset".equals(currentFieldName) || "preOffset".equals(currentFieldName)) {
@@ -133,6 +131,8 @@ public class DateHistogramParser implements Aggregator.Parser {
                     keyed = parser.booleanValue();
                 } else if ("script_values_sorted".equals(currentFieldName) || "scriptValuesSorted".equals(currentFieldName)) {
                     assumeSorted = parser.booleanValue();
+                } else if ("pre_zone_adjust_large_interval".equals(currentFieldName) || "preZoneAdjustLargeInterval".equals(currentFieldName)) {
+                    preZoneAdjustLargeInterval = parser.booleanValue();
                 } else {
                     throw new SearchParseException(context, "Unknown key for a " + token + " in [" + aggregationName + "]: [" + currentFieldName + "].");
                 }
@@ -238,11 +238,7 @@ public class DateHistogramParser implements Aggregator.Parser {
         if ("_count".equals(key)) {
             return (InternalOrder) (asc ? InternalOrder.COUNT_ASC : InternalOrder.COUNT_DESC);
         }
-        int i = key.indexOf('.');
-        if (i < 0) {
-            return new InternalOrder.Aggregation(key, null, asc);
-        }
-        return new InternalOrder.Aggregation(key.substring(0, i), key.substring(i + 1), asc);
+        return new InternalOrder.Aggregation(key, asc);
     }
 
     private long parseOffset(String offset) throws IOException {

@@ -21,6 +21,7 @@ package org.elasticsearch.indices.warmer;
 
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 import com.google.common.collect.ImmutableList;
+import org.elasticsearch.action.admin.indices.create.CreateIndexRequestBuilder;
 import org.elasticsearch.action.admin.indices.segments.IndexSegments;
 import org.elasticsearch.action.admin.indices.segments.IndexShardSegments;
 import org.elasticsearch.action.admin.indices.segments.IndicesSegmentResponse;
@@ -46,18 +47,14 @@ import org.junit.Test;
 
 import java.util.Locale;
 
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.hamcrest.Matchers.*;
 
-/**
- */
 public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
-
 
     @Test
     public void simpleWarmerTests() {
-        client().admin().indices().prepareCreate("test")
-                .setSettings(ImmutableSettings.settingsBuilder().put("index.number_of_shards", 1))
-                .execute().actionGet();
+        createIndex("test");
         ensureGreen();
 
         PutWarmerResponse putWarmerResponse = client().admin().indices().preparePutWarmer("warmer_1")
@@ -127,9 +124,7 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
                         "}")
                 .execute().actionGet();
 
-        client().admin().indices().prepareCreate("test")
-                .setSettings(ImmutableSettings.settingsBuilder().put("index.number_of_shards", 1))
-                .execute().actionGet();
+        createIndex("test");
         ensureGreen();
 
         ClusterState clusterState = client().admin().cluster().prepareState().execute().actionGet().getState();
@@ -143,11 +138,8 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
 
     @Test
     public void createIndexWarmer() {
-        client().admin().indices().prepareCreate("test")
+        assertAcked(prepareCreate("test")
                 .setSource("{\n" +
-                        "    \"settings\" : {\n" +
-                        "        \"index.number_of_shards\" : 1\n" +
-                        "    },\n" +
                         "    \"warmers\" : {\n" +
                         "        \"warmer_1\" : {\n" +
                         "            \"types\" : [],\n" +
@@ -158,8 +150,7 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
                         "            }\n" +
                         "        }\n" +
                         "    }\n" +
-                        "}")
-                .execute().actionGet();
+                        "}"));
 
         ClusterState clusterState = client().admin().cluster().prepareState().execute().actionGet().getState();
         IndexWarmersMetaData warmersMetaData = clusterState.metaData().index("test").custom(IndexWarmersMetaData.TYPE);
@@ -208,9 +199,7 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
 
     @Test // issue 3246
     public void ensureThatIndexWarmersCanBeChangedOnRuntime() throws Exception {
-        client().admin().indices().prepareCreate("test")
-                .setSettings(ImmutableSettings.settingsBuilder().put("index.number_of_shards", 1, "index.number_of_replicas", 0))
-                .execute().actionGet();
+        createIndex("test");
         ensureGreen();
 
         PutWarmerResponse putWarmerResponse = client().admin().indices().preparePutWarmer("custom_warmer")
@@ -233,9 +222,7 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
 
     @Test
     public void gettingAllWarmersUsingAllAndWildcardsShouldWork() throws Exception {
-        client().admin().indices().prepareCreate("test")
-                .setSettings(ImmutableSettings.settingsBuilder().put("index.number_of_shards", 1, "index.number_of_replicas", 0))
-                .execute().actionGet();
+        createIndex("test");
         ensureGreen();
 
         PutWarmerResponse putWarmerResponse = client().admin().indices().preparePutWarmer("custom_warmer")
@@ -284,14 +271,14 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
     private enum LoadingMethod {
         LAZY {
             @Override
-            void createIndex(String indexName, String type, String fieldName) {
-                client().admin().indices().prepareCreate(indexName).setSettings(ImmutableSettings.builder().put(SINGLE_SHARD_NO_REPLICA).put(SearchService.NORMS_LOADING_KEY, Loading.LAZY_VALUE)).execute().actionGet();
+            CreateIndexRequestBuilder createIndex(String indexName, String type, String fieldName) {
+                return client().admin().indices().prepareCreate(indexName).setSettings(ImmutableSettings.builder().put(SINGLE_SHARD_NO_REPLICA).put(SearchService.NORMS_LOADING_KEY, Loading.LAZY_VALUE));
             }
         },
         EAGER {
             @Override
-            void createIndex(String indexName, String type, String fieldName) {
-                client().admin().indices().prepareCreate(indexName).setSettings(ImmutableSettings.builder().put(SINGLE_SHARD_NO_REPLICA).put(SearchService.NORMS_LOADING_KEY, Loading.EAGER_VALUE)).execute().actionGet();
+            CreateIndexRequestBuilder createIndex(String indexName, String type, String fieldName) {
+                return client().admin().indices().prepareCreate(indexName).setSettings(ImmutableSettings.builder().put(SINGLE_SHARD_NO_REPLICA).put(SearchService.NORMS_LOADING_KEY, Loading.EAGER_VALUE));
             }
             @Override
             boolean isLazy() {
@@ -300,8 +287,8 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
         },
         EAGER_PER_FIELD {
             @Override
-            void createIndex(String indexName, String type, String fieldName) throws Exception {
-                client().admin().indices().prepareCreate(indexName).setSettings(ImmutableSettings.builder().put(SINGLE_SHARD_NO_REPLICA).put(SearchService.NORMS_LOADING_KEY, Loading.LAZY_VALUE)).addMapping(type, JsonXContent.contentBuilder()
+            CreateIndexRequestBuilder createIndex(String indexName, String type, String fieldName) throws Exception {
+                return client().admin().indices().prepareCreate(indexName).setSettings(ImmutableSettings.builder().put(SINGLE_SHARD_NO_REPLICA).put(SearchService.NORMS_LOADING_KEY, Loading.LAZY_VALUE)).addMapping(type, JsonXContent.contentBuilder()
                         .startObject()
                         .startObject(type)
                             .startObject("properties")
@@ -314,7 +301,7 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
                             .endObject()
                         .endObject()
                         .endObject()
-                        ).execute().actionGet();
+                        );
             }
             @Override
             boolean isLazy() {
@@ -322,17 +309,19 @@ public class SimpleIndicesWarmerTests extends ElasticsearchIntegrationTest {
             }
         };
         private static Settings SINGLE_SHARD_NO_REPLICA = ImmutableSettings.builder().put("number_of_shards", 1).put("number_of_replicas", 0).build();
-        abstract void createIndex(String indexName, String type, String fieldName) throws Exception;
+        abstract CreateIndexRequestBuilder createIndex(String indexName, String type, String fieldName) throws Exception;
         boolean isLazy() {
             return true;
         }
     }
+
     public void testEagerLoading() throws Exception {
         for (LoadingMethod method : LoadingMethod.values()) {
             logger.debug("METHOD " + method);
             String indexName = method.name().toLowerCase(Locale.ROOT);
-            method.createIndex(indexName, "t", "foo");
+            assertAcked(method.createIndex(indexName, "t", "foo"));
             client().prepareIndex(indexName, "t", "1").setSource("foo", "bar").setRefresh(true).execute().actionGet();
+            ensureGreen(indexName);
             long memoryUsage0 = getSegmentsMemoryUsage(indexName);
             // queries load norms if they were not loaded before
             client().prepareSearch(indexName).setQuery(QueryBuilders.matchQuery("foo", "bar")).execute().actionGet();

@@ -22,8 +22,6 @@ import com.google.common.base.Strings;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.query.FilterBuilders;
 import org.elasticsearch.search.aggregations.bucket.filter.Filter;
 import org.elasticsearch.search.aggregations.bucket.histogram.Histogram;
@@ -41,6 +39,7 @@ import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -61,14 +60,6 @@ public class StringTermsTests extends ElasticsearchIntegrationTest {
     private static final String SINGLE_VALUED_FIELD_NAME = "s_value";
     private static final String MULTI_VALUED_FIELD_NAME = "s_values";
 
-    @Override
-    public Settings indexSettings() {
-        return ImmutableSettings.builder()
-                .put("index.number_of_shards", between(1, 5))
-                .put("index.number_of_replicas", between(0, 1))
-                .build();
-    }
-
     public static String randomExecutionHint() {
         return randomFrom(Arrays.asList(null, TermsAggregatorFactory.EXECUTION_HINT_VALUE_MAP, TermsAggregatorFactory.EXECUTION_HINT_VALUE_ORDINALS));
     }
@@ -82,6 +73,7 @@ public class StringTermsTests extends ElasticsearchIntegrationTest {
                     .startObject()
                     .field(SINGLE_VALUED_FIELD_NAME, "val" + i)
                     .field("i", i)
+                    .field("tag", i < lowCardBuilders.length/2 + 1 ? "more" : "less")
                     .startArray(MULTI_VALUED_FIELD_NAME).value("val" + i).value("val" + (i + 1)).endArray()
                     .endObject());
         }
@@ -834,6 +826,100 @@ public class StringTermsTests extends ElasticsearchIntegrationTest {
     }
 
     @Test
+    public void singleValuedField_OrderedBySingleBucketSubAggregationAsc() throws Exception {
+        boolean asc = randomBoolean();
+        SearchResponse response = client().prepareSearch("idx").setTypes("type")
+                .addAggregation(terms("tags")
+                        .executionHint(randomExecutionHint())
+                        .field("tag")
+                        .order(Terms.Order.aggregation("filter", asc))
+                        .subAggregation(filter("filter").filter(FilterBuilders.matchAllFilter()))
+                ).execute().actionGet();
+
+
+        assertSearchResponse(response);
+
+        Terms tags = response.getAggregations().get("tags");
+        assertThat(tags, notNullValue());
+        assertThat(tags.getName(), equalTo("tags"));
+        assertThat(tags.getBuckets().size(), equalTo(2));
+
+        Iterator<Terms.Bucket> iters = tags.getBuckets().iterator();
+
+        Terms.Bucket tag = iters.next();
+        assertThat(tag, notNullValue());
+        assertThat(key(tag), equalTo(asc ? "less" : "more"));
+        assertThat(tag.getDocCount(), equalTo(asc ? 2l : 3l));
+        Filter filter = tag.getAggregations().get("filter");
+        assertThat(filter, notNullValue());
+        assertThat(filter.getDocCount(), equalTo(asc ? 2l : 3l));
+
+        tag = iters.next();
+        assertThat(tag, notNullValue());
+        assertThat(key(tag), equalTo(asc ? "more" : "less"));
+        assertThat(tag.getDocCount(), equalTo(asc ? 3l : 2l));
+        filter = tag.getAggregations().get("filter");
+        assertThat(filter, notNullValue());
+        assertThat(filter.getDocCount(), equalTo(asc ? 3l : 2l));
+    }
+
+    @Test
+    public void singleValuedField_OrderedBySubAggregationAsc_MultiHierarchyLevels() throws Exception {
+        boolean asc = randomBoolean();
+        SearchResponse response = client().prepareSearch("idx").setTypes("type")
+                .addAggregation(terms("tags")
+                        .executionHint(randomExecutionHint())
+                        .field("tag")
+                        .order(Terms.Order.aggregation("filter1>filter2>stats.max", asc))
+                        .subAggregation(filter("filter1").filter(FilterBuilders.matchAllFilter())
+                                .subAggregation(filter("filter2").filter(FilterBuilders.matchAllFilter())
+                                        .subAggregation(stats("stats").field("i"))))
+                ).execute().actionGet();
+
+
+        assertSearchResponse(response);
+
+        Terms tags = response.getAggregations().get("tags");
+        assertThat(tags, notNullValue());
+        assertThat(tags.getName(), equalTo("tags"));
+        assertThat(tags.getBuckets().size(), equalTo(2));
+
+        Iterator<Terms.Bucket> iters = tags.getBuckets().iterator();
+
+        // the max for "more" is 2
+        // the max for "less" is 4
+
+        Terms.Bucket tag = iters.next();
+        assertThat(tag, notNullValue());
+        assertThat(key(tag), equalTo(asc ? "more" : "less"));
+        assertThat(tag.getDocCount(), equalTo(asc ? 3l : 2l));
+        Filter filter1 = tag.getAggregations().get("filter1");
+        assertThat(filter1, notNullValue());
+        assertThat(filter1.getDocCount(), equalTo(asc ? 3l : 2l));
+        Filter filter2 = filter1.getAggregations().get("filter2");
+        assertThat(filter2, notNullValue());
+        assertThat(filter2.getDocCount(), equalTo(asc ? 3l : 2l));
+        Stats stats = filter2.getAggregations().get("stats");
+        assertThat(stats, notNullValue());
+        assertThat(stats.getMax(), equalTo(asc ? 2.0 : 4.0));
+
+        tag = iters.next();
+        assertThat(tag, notNullValue());
+        assertThat(key(tag), equalTo(asc ? "less" : "more"));
+        assertThat(tag.getDocCount(), equalTo(asc ? 2l : 3l));
+        filter1 = tag.getAggregations().get("filter1");
+        assertThat(filter1, notNullValue());
+        assertThat(filter1.getDocCount(), equalTo(asc ? 2l : 3l));
+        filter2 = filter1.getAggregations().get("filter2");
+        assertThat(filter2, notNullValue());
+        assertThat(filter2.getDocCount(), equalTo(asc ? 2l : 3l));
+        stats = filter2.getAggregations().get("stats");
+        assertThat(stats, notNullValue());
+        assertThat(stats.getMax(), equalTo(asc ? 4.0 : 2.0));
+    }
+
+
+    @Test
     public void singleValuedField_OrderedByMissingSubAggregation() throws Exception {
 
         MockBigArrays.discardNextCheck();
@@ -854,7 +940,7 @@ public class StringTermsTests extends ElasticsearchIntegrationTest {
     }
 
     @Test
-    public void singleValuedField_OrderedByNonMetricsSubAggregation() throws Exception {
+    public void singleValuedField_OrderedByNonMetricsOrMultiBucketSubAggregation() throws Exception {
 
         MockBigArrays.discardNextCheck();
         try {
@@ -863,11 +949,11 @@ public class StringTermsTests extends ElasticsearchIntegrationTest {
                     .addAggregation(terms("terms")
                             .executionHint(randomExecutionHint())
                             .field(SINGLE_VALUED_FIELD_NAME)
-                            .order(Terms.Order.aggregation("filter", true))
-                            .subAggregation(filter("filter").filter(FilterBuilders.termFilter("foo", "bar")))
+                            .order(Terms.Order.aggregation("values", true))
+                            .subAggregation(terms("values").field("i"))
                     ).execute().actionGet();
 
-            fail("Expected search to fail when trying to sort terms aggregation by sug-aggregation which is not of a metrics type");
+            fail("Expected search to fail when trying to sort terms aggregation by sug-aggregation which is not of a metrics or single-bucket type");
 
         } catch (ElasticsearchException e) {
             // expected
@@ -879,7 +965,6 @@ public class StringTermsTests extends ElasticsearchIntegrationTest {
 
         MockBigArrays.discardNextCheck();
         try {
-
             client().prepareSearch("idx").setTypes("type")
                     .addAggregation(terms("terms")
                             .executionHint(randomExecutionHint())

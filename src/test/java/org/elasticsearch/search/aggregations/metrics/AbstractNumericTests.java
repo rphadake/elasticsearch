@@ -19,8 +19,6 @@
 package org.elasticsearch.search.aggregations.metrics;
 
 import org.elasticsearch.action.index.IndexRequestBuilder;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.junit.Before;
 
@@ -33,14 +31,8 @@ import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
  *
  */
 public abstract class AbstractNumericTests extends ElasticsearchIntegrationTest {
-    
-    @Override
-    public Settings indexSettings() {
-        return ImmutableSettings.builder()
-                .put("index.number_of_shards", between(1, 5))
-                .put("index.number_of_replicas", between(0, 1))
-                .build();
-    }
+
+    protected long minValue, maxValue, minValues, maxValues;
 
     @Before
     public void init() throws Exception {
@@ -49,13 +41,18 @@ public abstract class AbstractNumericTests extends ElasticsearchIntegrationTest 
 
         List<IndexRequestBuilder> builders = new ArrayList<IndexRequestBuilder>();
 
-        for (int i = 0; i < 10; i++) { // TODO randomize the size and the params in here?
+        final int numDocs = 10;
+        for (int i = 0; i < numDocs; i++) { // TODO randomize the size and the params in here?
             builders.add(client().prepareIndex("idx", "type", ""+i).setSource(jsonBuilder()
                     .startObject()
                     .field("value", i+1)
                     .startArray("values").value(i+2).value(i+3).endArray()
                     .endObject()));
         }
+        minValue = 1;
+        minValues = 2;
+        maxValue = numDocs;
+        maxValues = numDocs + 2;
         indexRandom(true, builders);
 
         // creating an index to test the empty buckets functionality. The way it works is by indexing

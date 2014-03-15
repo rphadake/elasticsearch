@@ -52,6 +52,7 @@ public class MultiMatchQueryTests extends ElasticsearchIntegrationTest {
     @Before
     public void init() throws Exception {
         CreateIndexRequestBuilder builder = prepareCreate("test").setSettings(settingsBuilder()
+                .put(indexSettings())
                 .put(SETTING_NUMBER_OF_SHARDS, 1)
                 .put(SETTING_NUMBER_OF_REPLICAS, 0)
                 .put("index.analysis.analyzer.perfect_match.type", "custom")
@@ -63,7 +64,7 @@ public class MultiMatchQueryTests extends ElasticsearchIntegrationTest {
         );
         assertAcked(builder.addMapping("test", createMapping()));
         ensureGreen();
-        int numDocs = atLeast(50);
+        int numDocs = scaledRandomIntBetween(50, 100);
         List<IndexRequestBuilder> builders = new ArrayList<IndexRequestBuilder>();
         builders.add(client().prepareIndex("test", "test", "theone").setSource(
                 "full_name", "Captain America",
@@ -274,7 +275,7 @@ public class MultiMatchQueryTests extends ElasticsearchIntegrationTest {
 
         final int numDocs = (int) client().prepareCount("test")
                 .setQuery(matchAllQuery()).get().getCount();
-        int numIters = atLeast(5);
+        int numIters = scaledRandomIntBetween(5, 10);
         for (int i = 0; i < numIters; i++) {
             {
                 MatchQueryBuilder.Type type = randomBoolean() ? null : MatchQueryBuilder.Type.BOOLEAN;

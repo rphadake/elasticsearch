@@ -61,6 +61,7 @@ import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF
 import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilder;
 import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
 import static org.hamcrest.Matchers.*;
 
@@ -400,7 +401,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
                 .put("analysis.filter.my_synonyms.type", "synonym")
                 .putArray("analysis.filter.my_synonyms.synonyms", "foo,renamed");
         completionMappingBuilder.searchAnalyzer("suggest_analyzer_synonyms").indexAnalyzer("suggest_analyzer_synonyms");
-        createIndexAndMappingAndSettings(settingsBuilder, completionMappingBuilder);
+        createIndexAndMappingAndSettings(settingsBuilder.build(), completionMappingBuilder);
 
         client().prepareIndex(INDEX, TYPE, "1").setSource(jsonBuilder()
                 .startObject().startObject(FIELD)
@@ -416,7 +417,6 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
 
     @Test
     public void testThatUpgradeToMultiFieldTypeWorks() throws Exception {
-        Settings.Builder settingsBuilder = createDefaultSettings();
         final XContentBuilder mapping = jsonBuilder()
                 .startObject()
                 .startObject(TYPE)
@@ -428,7 +428,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
                 .endObject()
                 .endObject()
                 .endObject();
-        client().admin().indices().prepareCreate(INDEX).addMapping(TYPE, mapping).setSettings(settingsBuilder).get();
+        assertAcked(prepareCreate(INDEX).addMapping(TYPE, mapping));
         client().prepareIndex(INDEX, TYPE, "1").setRefresh(true).setSource(jsonBuilder().startObject().field(FIELD, "Foo Fighters").endObject()).get();
         ensureGreen(INDEX);
 
@@ -463,7 +463,6 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
 
     @Test
     public void testThatUpgradeToMultiFieldsWorks() throws Exception {
-        Settings.Builder settingsBuilder = createDefaultSettings();
         final XContentBuilder mapping = jsonBuilder()
                 .startObject()
                 .startObject(TYPE)
@@ -475,7 +474,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
                 .endObject()
                 .endObject()
                 .endObject();
-        client().admin().indices().prepareCreate(INDEX).addMapping(TYPE, mapping).setSettings(settingsBuilder).get();
+        assertAcked(prepareCreate(INDEX).addMapping(TYPE, mapping));
         client().prepareIndex(INDEX, TYPE, "1").setRefresh(true).setSource(jsonBuilder().startObject().field(FIELD, "Foo Fighters").endObject()).get();
         ensureGreen(INDEX);
 
@@ -512,7 +511,6 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
     // If the path_type is set to `just_name` and the multi field is updated (for example another multi field is added)
     // then if the path isn't specified again the path_type isn't taken into account and full path names are generated.
     public void testThatUpgradeToMultiFieldWorks_bug() throws Exception {
-        Settings.Builder settingsBuilder = createDefaultSettings();
         final XContentBuilder mapping = jsonBuilder()
                 .startObject()
                 .startObject(TYPE)
@@ -527,7 +525,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
                 .endObject()
                 .endObject()
                 .endObject();
-        client().admin().indices().prepareCreate(INDEX).addMapping(TYPE, mapping).setSettings(settingsBuilder).get();
+        assertAcked(prepareCreate(INDEX).addMapping(TYPE, mapping));
         client().prepareIndex(INDEX, TYPE, "1").setRefresh(true).setSource(jsonBuilder().startObject().field(FIELD, "Foo Fighters").endObject()).get();
         ensureGreen(INDEX);
 
@@ -710,10 +708,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
     public void testThatStatsAreWorking() throws Exception {
         String otherField = "testOtherField";
 
-        client().admin().indices().prepareDelete("_all").get();
-        client().admin().indices().prepareCreate(INDEX)
-                .setSettings(createDefaultSettings())
-                .get();
+        createIndex(INDEX);
 
         PutMappingResponse putMappingResponse = client().admin().indices().preparePutMapping(INDEX).setType(TYPE).setSource(jsonBuilder().startObject()
                 .startObject(TYPE).startObject("properties")
@@ -782,7 +777,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
         completionMappingBuilder.preserveSeparators(true).preservePositionIncrements(true);
         completionMappingBuilder.searchAnalyzer("stoptest");
         completionMappingBuilder.indexAnalyzer("simple");
-        createIndexAndMappingAndSettings(settingsBuilder, completionMappingBuilder);
+        createIndexAndMappingAndSettings(settingsBuilder.build(), completionMappingBuilder);
 
         client().prepareIndex(INDEX, TYPE, "1").setSource(jsonBuilder()
                 .startObject().field(FIELD, "Feed trolls").endObject()
@@ -878,11 +873,11 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
         return names;
     }
 
-    private void createIndexAndMappingAndSettings(Settings.Builder settingsBuilder, CompletionMappingBuilder completionMappingBuilder) throws IOException {
+    private void createIndexAndMappingAndSettings(Settings settings, CompletionMappingBuilder completionMappingBuilder) throws IOException {
         client().admin().indices().prepareCreate(INDEX)
-                .setSettings(settingsBuilder)
+                .setSettings(ImmutableSettings.settingsBuilder().put(indexSettings()).put(settings))
                 .get();
-        PutMappingResponse putMappingResponse = client().admin().indices().preparePutMapping(INDEX).setType(TYPE).setSource(jsonBuilder().startObject()
+        assertAcked(client().admin().indices().preparePutMapping(INDEX).setType(TYPE).setSource(jsonBuilder().startObject()
                 .startObject(TYPE).startObject("properties")
                 .startObject(FIELD)
                 .field("type", "completion")
@@ -893,20 +888,12 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
                 .field("preserve_position_increments", completionMappingBuilder.preservePositionIncrements)
                 .endObject()
                 .endObject().endObject()
-                .endObject())
-                .get();
-        assertThat(putMappingResponse.isAcknowledged(), is(true));
+                .endObject()));
         ensureYellow();
     }
 
     private void createIndexAndMapping(CompletionMappingBuilder completionMappingBuilder) throws IOException {
-        createIndexAndMappingAndSettings(createDefaultSettings(), completionMappingBuilder);
-    }
-
-    private ImmutableSettings.Builder createDefaultSettings() {
-        int randomShardNumber = between(1, 5);
-        int randomReplicaNumber = between(0, cluster().size() - 1);
-        return settingsBuilder().put(SETTING_NUMBER_OF_SHARDS, randomShardNumber).put(SETTING_NUMBER_OF_REPLICAS, randomReplicaNumber);
+        createIndexAndMappingAndSettings(ImmutableSettings.EMPTY, completionMappingBuilder);
     }
 
     private void createData(boolean optimize) throws IOException, InterruptedException, ExecutionException {
@@ -952,7 +939,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
 
     @Test // see #3555
     public void testPrunedSegments() throws IOException {
-        createIndexAndMappingAndSettings(settingsBuilder().put(SETTING_NUMBER_OF_SHARDS, 1).put(SETTING_NUMBER_OF_REPLICAS, 0), completionMappingBuilder);
+        createIndexAndMappingAndSettings(settingsBuilder().put(SETTING_NUMBER_OF_SHARDS, 1).put(SETTING_NUMBER_OF_REPLICAS, 0).build(), completionMappingBuilder);
 
         client().prepareIndex(INDEX, TYPE, "1").setSource(jsonBuilder()
                 .startObject().startObject(FIELD)
@@ -982,7 +969,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
         for (IndexShardSegments seg : client().admin().indices().prepareSegments().get().getIndices().get(INDEX)) {
             ShardSegments[] shards = seg.getShards();
             for (ShardSegments shardSegments : shards) {
-                assertThat(1, equalTo(shardSegments.getSegments().size()));
+                assertThat(shardSegments.getSegments().size(), equalTo(1));
             }
         }
     }
@@ -990,10 +977,10 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
     @Test
     public void testMaxFieldLength() throws IOException {
         client().admin().indices().prepareCreate(INDEX).get();
-        int iters = atLeast(10);
+        int iters = scaledRandomIntBetween(10, 20);
         for (int i = 0; i < iters; i++) {
             int maxInputLen = between(3, 50);
-            String str = replaceReservedChars(randomRealisticUnicodeOfCodepointLengthBetween(maxInputLen + 1, atLeast(maxInputLen + 2)), (char) 0x01);
+            String str = replaceReservedChars(randomRealisticUnicodeOfCodepointLengthBetween(maxInputLen + 1, maxInputLen + scaledRandomIntBetween(2, 50)), (char) 0x01);
             ElasticsearchAssertions.assertAcked(client().admin().indices().preparePutMapping(INDEX).setType(TYPE).setSource(jsonBuilder().startObject()
                     .startObject(TYPE).startObject("properties")
                     .startObject(FIELD)
@@ -1038,7 +1025,7 @@ public class CompletionSuggestSearchTests extends ElasticsearchIntegrationTest {
                 .endObject()));
         ensureYellow();
         // can cause stack overflow without the default max_input_length
-        String longString = replaceReservedChars(randomRealisticUnicodeOfLength(atLeast(5000)), (char) 0x01);
+        String longString = replaceReservedChars(randomRealisticUnicodeOfLength(randomIntBetween(5000, 10000)), (char) 0x01);
         client().prepareIndex(INDEX, TYPE, "1").setSource(jsonBuilder()
                 .startObject().startObject(FIELD)
                 .startArray("input").value(longString).endArray()

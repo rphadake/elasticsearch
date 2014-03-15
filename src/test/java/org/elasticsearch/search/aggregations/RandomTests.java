@@ -20,11 +20,11 @@
 package org.elasticsearch.search.aggregations;
 
 import com.carrotsearch.hppc.IntOpenHashSet;
+import org.elasticsearch.action.bulk.BulkRequestBuilder;
+import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.search.SearchRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.support.IndicesOptions;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.query.FilterBuilders;
 import org.elasticsearch.index.query.RangeFilterBuilder;
@@ -48,20 +48,10 @@ import static org.hamcrest.core.IsNull.notNullValue;
  */
 public class RandomTests extends ElasticsearchIntegrationTest {
 
-    @Override
-    public Settings indexSettings() {
-        return ImmutableSettings.builder()
-                .put("index.number_of_shards", between(1, 5))
-                .put("index.number_of_replicas", between(0, 1))
-                .build();
-    }
-
-
-
     // Make sure that unordered, reversed, disjoint and/or overlapping ranges are supported
     // Duel with filters
     public void testRandomRanges() throws Exception {
-        final int numDocs = atLeast(1000);
+        final int numDocs = scaledRandomIntBetween(1000, 10000);
         final double[][] docs = new double[numDocs][];
         for (int i = 0; i < numDocs; ++i) {
             final int numValues = randomInt(5);
@@ -152,7 +142,7 @@ public class RandomTests extends ElasticsearchIntegrationTest {
     // test long/double/string terms aggs with high number of buckets that require array growth
     public void testDuelTerms() throws Exception {
         // These high numbers of docs and terms are important to trigger page recycling
-        final int numDocs = atLeast(10000);
+        final int numDocs = scaledRandomIntBetween(10000, 20000);
         final int maxNumTerms = randomIntBetween(10, 100000);
 
         final IntOpenHashSet valuesSet = new IntOpenHashSet();
@@ -231,7 +221,7 @@ public class RandomTests extends ElasticsearchIntegrationTest {
     public void testDuelTermsHistogram() throws Exception {
         createIndex("idx");
 
-        final int numDocs = atLeast(1000);
+        final int numDocs = scaledRandomIntBetween(1000, 5000);
         final int maxNumTerms = randomIntBetween(10, 2000);
         final int interval = randomIntBetween(1, 100);
 
@@ -271,6 +261,31 @@ public class RandomTests extends ElasticsearchIntegrationTest {
             final Histogram.Bucket histoBucket = histo.getBucketByKey(key);
             assertEquals(bucket.getDocCount(), histoBucket.getDocCount());
         }
+    }
+
+    public void testLargeNumbersOfPercentileBuckets() throws Exception {
+        // test high numbers of percentile buckets to make sure paging and release work correctly
+        createIndex("idx");
+
+        final int numDocs = scaledRandomIntBetween(25000, 50000);
+        logger.info("Indexing [" + numDocs +"] docs");
+        int t = 0;
+        for (int i = 0; i < numDocs; ) {
+            BulkRequestBuilder request = client().prepareBulk();
+            final int bulkSize = Math.min(numDocs - i, 100);
+            client().prepareIndex("idx", "type").setSource("double_value", randomDouble()).execute().actionGet();
+            for (int j = 0; j < bulkSize; ++j) {
+                ++t;
+                request.add(client().prepareIndex("idx", "type", Integer.toString(i++)).setSource("double_value", randomDouble()));
+            }
+            BulkResponse response = request.execute().actionGet();
+            assertFalse(response.buildFailureMessage(), response.hasFailures());
+        }
+        assertEquals(numDocs, t);
+        assertNoFailures(client().admin().indices().prepareRefresh("idx").execute().get());
+
+        SearchResponse response = client().prepareSearch("idx").addAggregation(terms("terms").field("double_value").subAggregation(percentiles("pcts").field("double_value"))).execute().actionGet();
+        assertNoFailures(response);
     }
 
 }

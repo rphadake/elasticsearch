@@ -38,7 +38,6 @@ import org.elasticsearch.search.sort.SortOrder;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.engine.MockInternalEngine;
 import org.elasticsearch.test.engine.ThrowingAtomicReaderWrapper;
-import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -61,8 +60,7 @@ public class RandomExceptionCircuitBreakerTests extends ElasticsearchIntegration
                 .clear().setBreaker(true).execute().actionGet().getNodes()) {
             assertThat("Breaker is not set to 0", node.getBreaker().getEstimated(), equalTo(0L));
         }
-        final int numShards = between(1, 5);
-        final int numReplicas = randomIntBetween(0, 1);
+
         String mapping = XContentFactory.jsonBuilder()
                 .startObject()
                 .startObject("type")
@@ -107,8 +105,7 @@ public class RandomExceptionCircuitBreakerTests extends ElasticsearchIntegration
         }
 
         ImmutableSettings.Builder settings = settingsBuilder()
-                .put("index.number_of_shards", numShards)
-                .put("index.number_of_replicas", numReplicas)
+                .put(indexSettings())
                 .put(MockInternalEngine.READER_WRAPPER_TYPE, RandomExceptionDirectoryReaderWrapper.class.getName())
                 .put(EXCEPTION_TOP_LEVEL_RATIO_KEY, topLevelRate)
                 .put(EXCEPTION_LOW_LEVEL_RATIO_KEY, lowLevelRate)
@@ -143,7 +140,7 @@ public class RandomExceptionCircuitBreakerTests extends ElasticsearchIntegration
         logger.info("Refresh failed: [{}] numShardsFailed: [{}], shardFailuresLength: [{}], successfulShards: [{}], totalShards: [{}] ",
                 refreshFailed, refreshResponse.getFailedShards(), refreshResponse.getShardFailures().length,
                 refreshResponse.getSuccessfulShards(), refreshResponse.getTotalShards());
-        final int numSearches = atLeast(50);
+        final int numSearches = scaledRandomIntBetween(50, 150);
         NodesStatsResponse resp = client().admin().cluster().prepareNodesStats()
                 .clear().setBreaker(true).execute().actionGet();
         for (NodeStats stats : resp.getNodes()) {

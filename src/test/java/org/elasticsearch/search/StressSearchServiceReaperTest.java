@@ -26,19 +26,18 @@ import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
+import org.elasticsearch.test.ElasticsearchIntegrationTest.ClusterScope;
 import org.junit.Test;
 
 import java.util.concurrent.ExecutionException;
 
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
+import static org.elasticsearch.test.ElasticsearchIntegrationTest.Scope.SUITE;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
 
-/**
- */
-@ElasticsearchIntegrationTest.ClusterScope(scope = ElasticsearchIntegrationTest.Scope.SUITE)
+@ClusterScope(scope = SUITE)
 public class StressSearchServiceReaperTest extends ElasticsearchIntegrationTest {
-
 
     @Override
     protected Settings nodeSettings(int nodeOrdinal) {
@@ -49,15 +48,15 @@ public class StressSearchServiceReaperTest extends ElasticsearchIntegrationTest 
     @Slow
     @Test // see issue #5165 - this test fails each time without the fix in pull #5170
     public void testStressReaper() throws ExecutionException, InterruptedException {
-        int num = atLeast(100);
+        int num = randomIntBetween(100, 150);
         IndexRequestBuilder[] builders = new IndexRequestBuilder[num];
         for (int i = 0; i < builders.length; i++) {
             builders[i] = client().prepareIndex("test", "type", "" + i).setSource("f", English.intToEnglish(i));
         }
-        prepareCreate("test").setSettings("number_of_shards", randomIntBetween(1,5), "number_of_replicas", randomIntBetween(0,1)).setSettings();
+        createIndex("test");
         indexRandom(true, builders);
         ensureYellow();
-        final int iterations = atLeast(500);
+        final int iterations = scaledRandomIntBetween(500, 1000);
         for (int i = 0; i < iterations; i++) {
             SearchResponse searchResponse = client().prepareSearch("test").setQuery(matchAllQuery()).setSize(num).get();
             assertNoFailures(searchResponse);

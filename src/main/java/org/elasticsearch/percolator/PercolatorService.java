@@ -23,8 +23,11 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.index.ReaderUtil;
+import org.apache.lucene.index.memory.ExtendedMemoryIndex;
+import org.apache.lucene.index.memory.MemoryIndex;
 import org.apache.lucene.search.*;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.CloseableThreadLocal;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchIllegalArgumentException;
 import org.elasticsearch.ElasticsearchParseException;
@@ -47,6 +50,8 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.text.BytesText;
 import org.elasticsearch.common.text.StringText;
 import org.elasticsearch.common.text.Text;
+import org.elasticsearch.common.unit.ByteSizeUnit;
+import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
@@ -114,6 +119,8 @@ public class PercolatorService extends AbstractComponent {
     private final SortParseElement sortParseElement;
     private final ScriptService scriptService;
 
+    private final CloseableThreadLocal<MemoryIndex> cache;
+
     @Inject
     public PercolatorService(Settings settings, IndicesService indicesService, CacheRecycler cacheRecycler,
                              PageCacheRecycler pageCacheRecycler, BigArrays bigArrays,
@@ -131,8 +138,15 @@ public class PercolatorService extends AbstractComponent {
         this.scriptService = scriptService;
         this.sortParseElement = new SortParseElement();
 
-        single = new SingleDocumentPercolatorIndex(settings);
-        multi = new MultiDocumentPercolatorIndex();
+        final long maxReuseBytes = settings.getAsBytesSize("indices.memory.memory_index.size_per_thread", new ByteSizeValue(1, ByteSizeUnit.MB)).bytes();
+        cache = new CloseableThreadLocal<MemoryIndex>() {
+            @Override
+            protected MemoryIndex initialValue() {
+                return new ExtendedMemoryIndex(true, maxReuseBytes);
+            }
+        };
+        single = new SingleDocumentPercolatorIndex(cache);
+        multi = new MultiDocumentPercolatorIndex(cache);
 
         percolatorTypes = new ByteObjectOpenHashMap<PercolatorType>(6);
         percolatorTypes.put(countPercolator.id(), countPercolator);
@@ -185,8 +199,8 @@ public class PercolatorService extends AbstractComponent {
                 throw new ElasticsearchIllegalArgumentException("Can't highlight if size isn't specified");
             }
 
-            if (context.size < 0) {
-                context.size = 0;
+            if (context.size() < 0) {
+                context.size(0);
             }
 
             // parse the source either into one MemoryIndex, if it is a single document or index multiple docs if nested
@@ -294,10 +308,9 @@ public class PercolatorService extends AbstractComponent {
                     break;
                 } else if (token.isValue()) {
                     if ("size".equals(currentFieldName)) {
-                        context.limit = true;
-                        context.size = parser.intValue();
-                        if (context.size < 0) {
-                            throw new ElasticsearchParseException("size is set to [" + context.size + "] and is expected to be higher or equal to 0");
+                        context.size(parser.intValue());
+                        if (context.size() < 0) {
+                            throw new ElasticsearchParseException("size is set to [" + context.size() + "] and is expected to be higher or equal to 0");
                         }
                     } else if ("sort".equals(currentFieldName)) {
                         parseSort(parser, context);
@@ -386,8 +399,7 @@ public class PercolatorService extends AbstractComponent {
     }
 
     public void close() {
-        single.clean();
-        multi.clean();
+        cache.close();;
     }
 
     interface PercolatorType {
@@ -531,7 +543,7 @@ public class PercolatorService extends AbstractComponent {
                 }
 
                 if (collector.exists()) {
-                    if (!context.limit || count < context.size) {
+                    if (!context.limit || count < context.size()) {
                         matches.add(entry.getKey().bytes);
                         if (context.highlight() != null) {
                             highlightPhase.hitExecute(context, context.hitContext());
@@ -765,7 +777,7 @@ public class PercolatorService extends AbstractComponent {
         FilteredQuery query = new FilteredQuery(context.percolateQuery(), percolatorTypeFilter);
         percolatorSearcher.searcher().search(query, percolateCollector);
 
-        for (Collector queryCollector : percolateCollector.facetCollectors) {
+        for (Collector queryCollector : percolateCollector.facetAndAggregatorCollector) {
             if (queryCollector instanceof XCollector) {
                 ((XCollector) queryCollector).postCollection();
             }
@@ -859,7 +871,7 @@ public class PercolatorService extends AbstractComponent {
         for (PercolateShardResponse shardResult : shardResults) {
             aggregationsList.add(shardResult.aggregations());
         }
-        return InternalAggregations.reduce(aggregationsList, cacheRecycler);
+        return InternalAggregations.reduce(aggregationsList, bigArrays);
     }
 
 }

@@ -25,8 +25,6 @@ import com.carrotsearch.randomizedtesting.generators.RandomStrings;
 import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.search.SearchType;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogram;
@@ -48,14 +46,6 @@ import static org.elasticsearch.search.aggregations.AggregationBuilders.*;
 public class MinDocCountTests extends ElasticsearchIntegrationTest {
 
     private static final QueryBuilder QUERY = QueryBuilders.termQuery("match", true);
-
-    @Override
-    public Settings indexSettings() {
-        return ImmutableSettings.builder()
-                .put("index.number_of_shards", between(1, 5))
-                .put("index.number_of_replicas", between(0, 1))
-                .build();
-    }
 
     private int cardinality;
 

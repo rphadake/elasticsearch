@@ -140,6 +140,12 @@ public class BigArrays extends AbstractComponent {
             System.arraycopy(buf, offset, array, (int) index, len);
         }
 
+        @Override
+        public void fill(long fromIndex, long toIndex, byte value) {
+            assert indexIsInt(fromIndex);
+            assert indexIsInt(toIndex);
+            Arrays.fill(array, (int) fromIndex, (int) toIndex, value);
+        }
     }
 
     private static class IntArrayWrapper extends AbstractArrayWrapper implements IntArray {
@@ -169,6 +175,13 @@ public class BigArrays extends AbstractComponent {
         public int increment(long index, int inc) {
             assert indexIsInt(index);
             return array[(int) index] += inc;
+        }
+
+        @Override
+        public void fill(long fromIndex, long toIndex, int value) {
+            assert indexIsInt(fromIndex);
+            assert indexIsInt(toIndex);
+            Arrays.fill(array, (int) fromIndex, (int) toIndex, value);
         }
 
     }
@@ -367,6 +380,39 @@ public class BigArrays extends AbstractComponent {
         }
         final long newSize = overSize(minSize, BYTE_PAGE_SIZE, RamUsageEstimator.NUM_BYTES_BYTE);
         return resize(array, newSize);
+    }
+
+    /** @see Arrays.hashCode(byte[]) */
+    public int hashCode(ByteArray array) {
+        if (array == null) {
+            return 0;
+        }
+
+        int hash = 1;
+        for (long i = 0; i < array.size(); i++) {
+            hash = 31 * hash + array.get(i);
+        }
+
+        return hash;
+    }
+
+    /** @see Arrays.equals(byte[], byte[]) */
+    public boolean equals(ByteArray array, ByteArray other) {
+        if (array == other) {
+            return true;
+        }
+
+        if (array.size() != other.size()) {
+            return false;
+        }
+
+        for (long i = 0; i < array.size(); i++) {
+            if (array.get(i) != other.get(i)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
