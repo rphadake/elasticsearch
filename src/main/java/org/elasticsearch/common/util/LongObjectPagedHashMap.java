@@ -130,7 +130,7 @@ public class LongObjectPagedHashMap<T> extends AbstractPagedHashMap implements I
             boolean cached;
             final Cursor<T> cursor;
             {
-                cursor = new Cursor<T>();
+                cursor = new Cursor<>();
                 cursor.index = -1;
                 cached = false;
             }
@@ -166,9 +166,8 @@ public class LongObjectPagedHashMap<T> extends AbstractPagedHashMap implements I
     }
 
     @Override
-    public boolean release() throws ElasticsearchException {
-        Releasables.release(keys, values);
-        return true;
+    public void close() throws ElasticsearchException {
+        Releasables.close(keys, values);
     }
 
     @Override

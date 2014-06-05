@@ -23,18 +23,17 @@ import org.elasticsearch.search.aggregations.AggregationExecutionException;
 import org.elasticsearch.search.aggregations.Aggregator;
 import org.elasticsearch.search.aggregations.Aggregator.BucketAggregationMode;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
-import org.elasticsearch.search.aggregations.support.ValueSourceAggregatorFactory;
 import org.elasticsearch.search.aggregations.support.ValuesSource;
+import org.elasticsearch.search.aggregations.support.ValuesSourceAggregatorFactory;
 import org.elasticsearch.search.aggregations.support.ValuesSourceConfig;
-import org.elasticsearch.search.aggregations.support.numeric.NumericValuesSource;
 
-final class CardinalityAggregatorFactory extends ValueSourceAggregatorFactory<ValuesSource> {
+final class CardinalityAggregatorFactory extends ValuesSourceAggregatorFactory<ValuesSource> {
 
     private final long precisionThreshold;
     private final boolean rehash;
 
-    CardinalityAggregatorFactory(String name, ValuesSourceConfig valuesSourceConfig, long precisionThreshold, boolean rehash) {
-        super(name, InternalCardinality.TYPE.name(), valuesSourceConfig);
+    CardinalityAggregatorFactory(String name, ValuesSourceConfig config, long precisionThreshold, boolean rehash) {
+        super(name, InternalCardinality.TYPE.name(), config);
         this.precisionThreshold = precisionThreshold;
         this.rehash = rehash;
     }
@@ -50,7 +49,7 @@ final class CardinalityAggregatorFactory extends ValueSourceAggregatorFactory<Va
 
     @Override
     protected Aggregator create(ValuesSource valuesSource, long expectedBucketsCount, AggregationContext context, Aggregator parent) {
-        if (!(valuesSource instanceof NumericValuesSource) && !rehash) {
+        if (!(valuesSource instanceof ValuesSource.Numeric) && !rehash) {
             throw new AggregationExecutionException("Turning off rehashing for cardinality aggregation [" + name + "] on non-numeric values in not allowed");
         }
         return new CardinalityAggregator(name, parent == null ? 1 : parent.estimatedBucketCount(), valuesSource, rehash, precision(parent), context, parent);
@@ -64,8 +63,8 @@ final class CardinalityAggregatorFactory extends ValueSourceAggregatorFactory<Va
     private int defaultPrecision(Aggregator parent) {
         int precision = HyperLogLogPlusPlus.DEFAULT_PRECISION;
         while (parent != null) {
-            if (parent.bucketAggregationMode() == BucketAggregationMode.MULTI_BUCKETS) {
-                // if the parent is a multi-bucket aggregator, we substract 5 to the precision,
+            if (parent.bucketAggregationMode() == BucketAggregationMode.PER_BUCKET) {
+                // if the parent is a per-bucket aggregator, we substract 5 to the precision,
                 // which will effectively divide the memory usage of each counter by 32
                 precision -= 5;
             }

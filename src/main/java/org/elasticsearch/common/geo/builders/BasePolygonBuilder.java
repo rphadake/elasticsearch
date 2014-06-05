@@ -19,21 +19,14 @@
 
 package org.elasticsearch.common.geo.builders;
 
+import com.spatial4j.core.shape.Shape;
+import com.vividsolutions.jts.geom.*;
+import org.elasticsearch.common.xcontent.XContentBuilder;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
-
-import org.elasticsearch.common.xcontent.XContentBuilder;
-
-import com.spatial4j.core.shape.Shape;
-import com.spatial4j.core.shape.jts.JtsGeometry;
-import com.vividsolutions.jts.geom.Coordinate;
-import com.vividsolutions.jts.geom.Geometry;
-import com.vividsolutions.jts.geom.GeometryFactory;
-import com.vividsolutions.jts.geom.LinearRing;
-import com.vividsolutions.jts.geom.MultiPolygon;
-import com.vividsolutions.jts.geom.Polygon;
 
 /**
  * The {@link BasePolygonBuilder} implements the groundwork to create polygons. This contains
@@ -52,7 +45,7 @@ public abstract class BasePolygonBuilder<E extends BasePolygonBuilder<E>> extend
     protected Ring<E> shell; 
 
     // List of linear rings defining the holes of the polygon 
-    protected final ArrayList<BaseLineStringBuilder<?>> holes = new ArrayList<BaseLineStringBuilder<?>>();
+    protected final ArrayList<BaseLineStringBuilder<?>> holes = new ArrayList<>();
 
     @SuppressWarnings("unchecked")
     private E thisRef() {
@@ -100,7 +93,7 @@ public abstract class BasePolygonBuilder<E extends BasePolygonBuilder<E>> extend
      * @return this
      */
     public Ring<E> hole() {
-        Ring<E> hole = new Ring<E>(thisRef());
+        Ring<E> hole = new Ring<>(thisRef());
         this.holes.add(hole);
         return hole;
     }
@@ -149,8 +142,7 @@ public abstract class BasePolygonBuilder<E extends BasePolygonBuilder<E>> extend
 
     @Override
     public Shape build() {
-        Geometry geometry = buildGeometry(FACTORY, wrapdateline);
-        return new JtsGeometry(geometry, SPATIAL_CONTEXT, !wrapdateline);
+        return jtsGeometry(buildGeometry(FACTORY, wrapdateline));
     }
 
     protected XContentBuilder coordinatesArray(XContentBuilder builder, Params params) throws IOException {
@@ -330,12 +322,12 @@ public abstract class BasePolygonBuilder<E extends BasePolygonBuilder<E>> extend
     } 
 
     private static Edge[] edges(Edge[] edges, int numHoles, ArrayList<ArrayList<Coordinate[]>> components) {
-        ArrayList<Edge> mainEdges = new ArrayList<Edge>(edges.length);
+        ArrayList<Edge> mainEdges = new ArrayList<>(edges.length);
 
         for (int i = 0; i < edges.length; i++) {
             if (edges[i].component >= 0) {
                 int length = component(edges[i], -(components.size()+numHoles+1), mainEdges);
-                ArrayList<Coordinate[]> component = new ArrayList<Coordinate[]>();
+                ArrayList<Coordinate[]> component = new ArrayList<>();
                 component.add(coordinates(edges[i], new Coordinate[length+1]));
                 components.add(component);
             }
@@ -345,7 +337,7 @@ public abstract class BasePolygonBuilder<E extends BasePolygonBuilder<E>> extend
     }
 
     private static Coordinate[][][] compose(Edge[] edges, Edge[] holes, int numHoles) {
-        final ArrayList<ArrayList<Coordinate[]>> components = new ArrayList<ArrayList<Coordinate[]>>();
+        final ArrayList<ArrayList<Coordinate[]>> components = new ArrayList<>();
         assign(holes, holes(holes, numHoles), numHoles, edges(edges, numHoles, components), components);
         return buildCoordinates(components);
     }
@@ -360,7 +352,10 @@ public abstract class BasePolygonBuilder<E extends BasePolygonBuilder<E>> extend
             LOGGER.debug("Holes: " + Arrays.toString(holes));
         }
         for (int i = 0; i < numHoles; i++) {
-            final Edge current = holes[i];
+            final Edge current = new Edge(holes[i].coordinate, holes[i].next);
+            // the edge intersects with itself at its own coordinate.  We need intersect to be set this way so the binary search 
+            // will get the correct position in the edge list and therefore the correct component to add the hole
+            current.intersect = current.coordinate;
             final int intersections = intersections(current.coordinate.x, edges);
             final int pos = Arrays.binarySearch(edges, 0, intersections, current, INTERSECTION_ORDER);
             assert pos < 0 : "illegal state: two edges cross the datum at the same position";

@@ -59,9 +59,9 @@ public class TransportMultiGetAction extends TransportAction<MultiGetRequest, Mu
 
         clusterState.blocks().globalBlockedRaiseException(ClusterBlockLevel.READ);
 
-        final AtomicArray<MultiGetItemResponse> responses = new AtomicArray<MultiGetItemResponse>(request.items.size());
+        final AtomicArray<MultiGetItemResponse> responses = new AtomicArray<>(request.items.size());
 
-        Map<ShardId, MultiGetShardRequest> shardRequests = new HashMap<ShardId, MultiGetShardRequest>();
+        Map<ShardId, MultiGetShardRequest> shardRequests = new HashMap<>();
         for (int i = 0; i < request.items.size(); i++) {
             MultiGetRequest.Item item = request.items.get(i);
             if (!clusterState.metaData().hasConcreteIndex(item.index())) {
@@ -74,7 +74,7 @@ public class TransportMultiGetAction extends TransportAction<MultiGetRequest, Mu
             }
 
             item.routing(clusterState.metaData().resolveIndexRouting(item.routing(), item.index()));
-            item.index(clusterState.metaData().concreteIndex(item.index()));
+            item.index(clusterState.metaData().concreteSingleIndex(item.index()));
             ShardId shardId = clusterService.operationRouting()
                     .getShards(clusterState, item.index(), item.type(), item.id(), item.routing(), null).shardId();
             MultiGetShardRequest shardRequest = shardRequests.get(shardId);

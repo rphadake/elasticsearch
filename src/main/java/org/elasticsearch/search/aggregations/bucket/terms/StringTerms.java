@@ -41,7 +41,7 @@ public class StringTerms extends InternalTerms {
 
     public static final InternalAggregation.Type TYPE = new Type("terms", "sterms");
 
-    public static AggregationStreams.Stream STREAM = new AggregationStreams.Stream() {
+    public static final AggregationStreams.Stream STREAM = new AggregationStreams.Stream() {
         @Override
         public StringTerms readResult(StreamInput in) throws IOException {
             StringTerms buckets = new StringTerms();
@@ -104,7 +104,7 @@ public class StringTerms extends InternalTerms {
         this.requiredSize = readSize(in);
         this.minDocCount = in.readVLong();
         int size = in.readVInt();
-        List<InternalTerms.Bucket> buckets = new ArrayList<InternalTerms.Bucket>(size);
+        List<InternalTerms.Bucket> buckets = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
             buckets.add(new Bucket(in.readBytesRef(), in.readVLong(), InternalAggregations.readAggregations(in)));
         }
@@ -132,7 +132,7 @@ public class StringTerms extends InternalTerms {
         builder.startArray(CommonFields.BUCKETS);
         for (InternalTerms.Bucket bucket : buckets) {
             builder.startObject();
-            builder.field(CommonFields.KEY, ((Bucket) bucket).termBytes);
+            builder.utf8Field(CommonFields.KEY, ((Bucket) bucket).termBytes);
             builder.field(CommonFields.DOC_COUNT, bucket.getDocCount());
             ((InternalAggregations) bucket.getAggregations()).toXContentInternal(builder, params);
             builder.endObject();

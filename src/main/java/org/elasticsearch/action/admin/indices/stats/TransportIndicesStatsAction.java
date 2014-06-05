@@ -125,7 +125,7 @@ public class TransportIndicesStatsAction extends TransportBroadcastOperationActi
     }
 
     @Override
-    protected IndexShardStatsRequest newShardRequest(ShardRouting shard, IndicesStatsRequest request) {
+    protected IndexShardStatsRequest newShardRequest(int numShards, ShardRouting shard, IndicesStatsRequest request) {
         return new IndexShardStatsRequest(shard.index(), shard.id(), request);
     }
 
@@ -192,6 +192,9 @@ public class TransportIndicesStatsAction extends TransportBroadcastOperationActi
         }
         if (request.request.translog()) {
             flags.set(CommonStatsFlags.Flag.Translog);
+        }
+        if (request.request.suggest()) {
+            flags.set(CommonStatsFlags.Flag.Suggest);
         }
 
         return new ShardStats(indexShard, flags);

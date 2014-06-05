@@ -83,7 +83,7 @@ public class GeolocationContextMapping extends ContextMapping {
      *            length of the geohashes
      * @param neighbors
      *            should neighbors be indexed
-     * @param defaultLocation
+     * @param defaultLocations
      *            location to use, if it is not provided by the document
      */
     protected GeolocationContextMapping(String name, int[] precision, boolean neighbors, Collection<String> defaultLocations, String fieldName) {
@@ -114,6 +114,10 @@ public class GeolocationContextMapping extends ContextMapping {
      *         <code>config</code>
      */
     protected static GeolocationContextMapping load(String name, Map<String, Object> config) {
+        if (!config.containsKey(FIELD_PRECISION)) {
+            throw new ElasticsearchParseException("field [precision] is missing");
+        }
+
         final GeolocationContextMapping.Builder builder = new GeolocationContextMapping.Builder(name);
 
         if (config != null) {
@@ -158,7 +162,16 @@ public class GeolocationContextMapping extends ContextMapping {
                         builder.addDefaultLocation(location.toString());    
                     }
                 } else if (def instanceof String) {
-                    builder.addDefaultLocation(def.toString());    
+                    builder.addDefaultLocation(def.toString());
+                } else if (def instanceof Map) {
+                    Map<String, Object> latlonMap = (Map<String, Object>) def;
+                    if (!latlonMap.containsKey("lat") || !(latlonMap.get("lat") instanceof Double)) {
+                        throw new ElasticsearchParseException("field [" + FIELD_MISSING + "] map must have field lat and a valid latitude");
+                    }
+                    if (!latlonMap.containsKey("lon") || !(latlonMap.get("lon") instanceof Double)) {
+                        throw new ElasticsearchParseException("field [" + FIELD_MISSING + "] map must have field lon and a valid longitude");
+                    }
+                    builder.addDefaultLocation(Double.valueOf(latlonMap.get("lat").toString()), Double.valueOf(latlonMap.get("lon").toString()));
                 } else {
                     throw new ElasticsearchParseException("field [" + FIELD_MISSING + "] must be of type string or list");
                 }
@@ -210,13 +223,13 @@ public class GeolocationContextMapping extends ContextMapping {
                 // otherwise it's a list of locations
                 ArrayList<String> result = Lists.newArrayList();
                 while (token != Token.END_ARRAY) {
-                    result.add(GeoPoint.parse(parser).geohash());
+                    result.add(GeoUtils.parseGeoPoint(parser).geohash());
                 }
                 return result;
             }
         } else {
             // or a single location
-            return Collections.singleton(GeoPoint.parse(parser).geohash());
+            return Collections.singleton(GeoUtils.parseGeoPoint(parser).geohash());
         }
     } 
     
@@ -264,8 +277,16 @@ public class GeolocationContextMapping extends ContextMapping {
      *            longitude of the location
      * @return new geolocation query
      */
-    public static GeoQuery query(String name, double lat, double lon) {
-        return query(name, GeoHashUtils.encode(lat, lon));
+    public static GeoQuery query(String name, double lat, double lon, int ... precisions) {
+        return query(name, GeoHashUtils.encode(lat, lon), precisions);
+    }
+
+    public static GeoQuery query(String name, double lat, double lon, String ... precisions) {
+        int precisionInts[] = new int[precisions.length];
+        for (int i = 0 ; i < precisions.length; i++) {
+            precisionInts[i] = GeoUtils.geoHashLevelsForPrecision(precisions[i]);
+        }
+        return query(name, GeoHashUtils.encode(lat, lon), precisionInts);
     }
 
     /**
@@ -275,8 +296,8 @@ public class GeolocationContextMapping extends ContextMapping {
      *            geohash of the location
      * @return new geolocation query
      */
-    public static GeoQuery query(String name, String geohash) {
-        return new GeoQuery(name, geohash);
+    public static GeoQuery query(String name, String geohash, int ... precisions) {
+        return new GeoQuery(name, geohash, precisions);
     }
     
     private static final int parsePrecision(XContentParser parser) throws IOException, ElasticsearchParseException {
@@ -308,20 +329,28 @@ public class GeolocationContextMapping extends ContextMapping {
                 final String fieldName = parser.text();
                 if("lat".equals(fieldName)) {
                     if(point == null) {
-                        if (parser.nextToken() == Token.VALUE_NUMBER) {
-                            lat = parser.doubleValue();
-                        } else {
-                            throw new ElasticsearchParseException("latitude must be a number");
+                        parser.nextToken();
+                        switch (parser.currentToken()) {
+                            case VALUE_NUMBER:
+                            case VALUE_STRING:
+                                lat = parser.doubleValue(true);
+                                break;
+                            default:
+                                throw new ElasticsearchParseException("latitude must be a number");
                         }
                     } else {
                         throw new ElasticsearchParseException("only lat/lon or [" + FIELD_VALUE + "] is allowed");
                     }
                 } else if ("lon".equals(fieldName)) {
                     if(point == null) {
-                        if(parser.nextToken() == Token.VALUE_NUMBER) {
-                            lon = parser.doubleValue();
-                        } else {
-                            throw new ElasticsearchParseException("longitude must be a number");
+                        parser.nextToken();
+                        switch (parser.currentToken()) {
+                            case VALUE_NUMBER:
+                            case VALUE_STRING:
+                                lon = parser.doubleValue(true);
+                                break;
+                            default:
+                                throw new ElasticsearchParseException("longitude must be a number");
                         }
                     } else {
                         throw new ElasticsearchParseException("only lat/lon or [" + FIELD_VALUE + "] is allowed");
@@ -337,8 +366,9 @@ public class GeolocationContextMapping extends ContextMapping {
                         precision = new int[] { parsePrecision(parser) };
                     }
                 } else if (FIELD_VALUE.equals(fieldName)) {
-                    if(lat == Double.NaN && lon == Double.NaN) {
-                        point = GeoPoint.parse(parser);
+                    if(Double.isNaN(lon) && Double.isNaN(lat)) {
+                        parser.nextToken();
+                        point = GeoUtils.parseGeoPoint(parser);
                     } else {
                         throw new ElasticsearchParseException("only lat/lon or [" + FIELD_VALUE + "] is allowed");
                     }
@@ -348,16 +378,20 @@ public class GeolocationContextMapping extends ContextMapping {
             }
 
             if (point == null) {
-                if (lat == Double.NaN || lon == Double.NaN) {
+                if (Double.isNaN(lat) || Double.isNaN(lon)) {
                     throw new ElasticsearchParseException("location is missing");
                 } else {
                     point = new GeoPoint(lat, lon);
                 }
             }
 
+            if (precision == null || precision.length == 0) {
+                precision = this.precision;
+            }
+
             return new GeoQuery(name, point.geohash(), precision);
         } else {
-            return new GeoQuery(name, GeoPoint.parse(parser).getGeohash(), precision);
+            return new GeoQuery(name, GeoUtils.parseGeoPoint(parser).getGeohash(), precision);
         }
     }
     
@@ -405,7 +439,7 @@ public class GeolocationContextMapping extends ContextMapping {
 
         private IntOpenHashSet precisions = new IntOpenHashSet();
         private boolean neighbors; // take neighbor cell on the lowest level into account
-        private HashSet<String> defaultLocations = new HashSet<String>();
+        private HashSet<String> defaultLocations = new HashSet<>();
         private String fieldName = null;
         
         protected Builder(String name) {
@@ -450,7 +484,7 @@ public class GeolocationContextMapping extends ContextMapping {
         /**
          * Set the precision use o make suggestions
          * 
-         * @param precision
+         * @param meters
          *            precision as distance in meters
          * @return this
          */
@@ -466,7 +500,7 @@ public class GeolocationContextMapping extends ContextMapping {
         /**
          * Set the precision use o make suggestions
          * 
-         * @param precision
+         * @param level
          *            maximum length of geohashes
          * @return this
          */
@@ -504,7 +538,7 @@ public class GeolocationContextMapping extends ContextMapping {
          * Set a default location that should be used, if no location is
          * provided by the query
          * 
-         * @param geohash
+         * @param geohashes
          *            geohash of the default location
          * @return this
          */
@@ -575,18 +609,35 @@ public class GeolocationContextMapping extends ContextMapping {
         protected TokenStream wrapTokenStream(Document doc, TokenStream stream) {
             Collection<String> geohashes;
 
-            if(locations == null | locations.size() == 0) {
+            if (locations == null || locations.size() == 0) {
                 if(mapping.fieldName != null) {
                     IndexableField[] fields = doc.getFields(mapping.fieldName);
-                    if(fields.length > 0) {
-                        geohashes = new ArrayList<String>(fields.length);
+                    if(fields.length == 0) {
+                        IndexableField[] lonFields = doc.getFields(mapping.fieldName + ".lon");
+                        IndexableField[] latFields = doc.getFields(mapping.fieldName + ".lat");
+                        if (lonFields.length > 0 && latFields.length > 0) {
+                            geohashes = new ArrayList<>(fields.length);
+                            GeoPoint spare = new GeoPoint();
+                            for (int i = 0 ; i < lonFields.length ; i++) {
+                                IndexableField lonField = lonFields[i];
+                                IndexableField latField = latFields[i];
+                                assert lonField.fieldType().docValueType() == latField.fieldType().docValueType();
+                                // we write doc values fields differently: one field for all values, so we need to only care about indexed fields
+                                if (lonField.fieldType().docValueType() == null) {
+                                    spare.reset(latField.numericValue().doubleValue(), lonField.numericValue().doubleValue());
+                                    geohashes.add(spare.geohash());
+                                }
+                            }
+                        } else {
+                            geohashes = mapping.defaultLocations;
+                        }
+                    } else {
+                        geohashes = new ArrayList<>(fields.length);
                         GeoPoint spare = new GeoPoint();
                         for (IndexableField field : fields) {
                             spare.resetFromString(field.stringValue());
                             geohashes.add(spare.geohash());
                         }
-                    } else {
-                        geohashes = mapping.defaultLocations;
                     }
                 } else {
                     geohashes = mapping.defaultLocations;
@@ -595,7 +646,7 @@ public class GeolocationContextMapping extends ContextMapping {
                 geohashes = locations;
             }
 
-            Collection<String> locations = new HashSet<String>();
+            Collection<String> locations = new HashSet<>();
             for (String geohash : geohashes) {
                 for (int p : mapping.precision) {
                     int precision = Math.min(p, geohash.length());

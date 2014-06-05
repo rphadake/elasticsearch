@@ -19,16 +19,18 @@
 package org.elasticsearch.search.aggregations.bucket.terms;
 
 import org.apache.lucene.index.AtomicReaderContext;
+import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.lease.Releasables;
+import org.elasticsearch.common.util.LongHash;
 import org.elasticsearch.index.fielddata.LongValues;
 import org.elasticsearch.search.aggregations.Aggregator;
 import org.elasticsearch.search.aggregations.AggregatorFactories;
 import org.elasticsearch.search.aggregations.InternalAggregation;
-import org.elasticsearch.search.aggregations.bucket.BucketsAggregator;
-import org.elasticsearch.common.util.LongHash;
 import org.elasticsearch.search.aggregations.bucket.terms.support.BucketPriorityQueue;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
-import org.elasticsearch.search.aggregations.support.numeric.NumericValuesSource;
+import org.elasticsearch.search.aggregations.support.ValuesSource;
+import org.elasticsearch.search.aggregations.support.format.ValueFormat;
+import org.elasticsearch.search.aggregations.support.format.ValueFormatter;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -37,24 +39,20 @@ import java.util.Collections;
 /**
  *
  */
-public class LongTermsAggregator extends BucketsAggregator {
+public class LongTermsAggregator extends TermsAggregator {
 
     private final InternalOrder order;
-    protected final int requiredSize;
-    protected final int shardSize;
-    protected final long minDocCount;
-    protected final NumericValuesSource valuesSource;
+    protected final ValuesSource.Numeric valuesSource;
+    protected final @Nullable ValueFormatter formatter;
     protected final LongHash bucketOrds;
     private LongValues values;
 
-    public LongTermsAggregator(String name, AggregatorFactories factories, NumericValuesSource valuesSource, long estimatedBucketCount,
-                               InternalOrder order, int requiredSize, int shardSize, long minDocCount, AggregationContext aggregationContext, Aggregator parent) {
-        super(name, BucketAggregationMode.PER_BUCKET, factories, estimatedBucketCount, aggregationContext, parent);
+    public LongTermsAggregator(String name, AggregatorFactories factories, ValuesSource.Numeric valuesSource, @Nullable ValueFormat format, long estimatedBucketCount,
+                               InternalOrder order, BucketCountThresholds bucketCountThresholds, AggregationContext aggregationContext, Aggregator parent) {
+        super(name, BucketAggregationMode.PER_BUCKET, factories, estimatedBucketCount, aggregationContext, parent, bucketCountThresholds);
         this.valuesSource = valuesSource;
+        this.formatter = format != null ? format.formatter() : null;
         this.order = InternalOrder.validate(order, this);
-        this.requiredSize = requiredSize;
-        this.shardSize = shardSize;
-        this.minDocCount = minDocCount;
         bucketOrds = new LongHash(estimatedBucketCount, aggregationContext.bigArrays());
     }
 
@@ -78,8 +76,10 @@ public class LongTermsAggregator extends BucketsAggregator {
             long bucketOrdinal = bucketOrds.add(val);
             if (bucketOrdinal < 0) { // already seen
                 bucketOrdinal = - 1 - bucketOrdinal;
+                collectExistingBucket(doc, bucketOrdinal);
+            } else {
+                collectBucket(doc, bucketOrdinal);
             }
-            collectBucket(doc, bucketOrdinal);
         }
     }
 
@@ -87,7 +87,7 @@ public class LongTermsAggregator extends BucketsAggregator {
     public InternalAggregation buildAggregation(long owningBucketOrdinal) {
         assert owningBucketOrdinal == 0;
 
-        if (minDocCount == 0 && (order != InternalOrder.COUNT_DESC || bucketOrds.size() < requiredSize)) {
+        if (bucketCountThresholds.getMinDocCount() == 0 && (order != InternalOrder.COUNT_DESC || bucketOrds.size() < bucketCountThresholds.getRequiredSize())) {
             // we need to fill-in the blanks
             for (AtomicReaderContext ctx : context.searchContext().searcher().getTopReaderContext().leaves()) {
                 context.setNextReader(ctx);
@@ -101,24 +101,20 @@ public class LongTermsAggregator extends BucketsAggregator {
             }
         }
 
-        final int size = (int) Math.min(bucketOrds.size(), shardSize);
+        final int size = (int) Math.min(bucketOrds.size(), bucketCountThresholds.getShardSize());
 
         BucketPriorityQueue ordered = new BucketPriorityQueue(size, order.comparator(this));
         LongTerms.Bucket spare = null;
-        for (long i = 0; i < bucketOrds.capacity(); ++i) {
-            final long ord = bucketOrds.id(i);
-            if (ord < 0) {
-                // slot is not allocated
-                continue;
-            }
-
+        for (long i = 0; i < bucketOrds.size(); i++) {
             if (spare == null) {
                 spare = new LongTerms.Bucket(0, 0, null);
             }
-            spare.term = bucketOrds.key(i);
-            spare.docCount = bucketDocCount(ord);
-            spare.bucketOrd = ord;
-            spare = (LongTerms.Bucket) ordered.insertWithOverflow(spare);
+            spare.term = bucketOrds.get(i);
+            spare.docCount = bucketDocCount(i);
+            spare.bucketOrd = i;
+            if (bucketCountThresholds.getShardMinDocCount() <= spare.docCount) {
+                spare = (LongTerms.Bucket) ordered.insertWithOverflow(spare);
+            }
         }
 
         final InternalTerms.Bucket[] list = new InternalTerms.Bucket[ordered.size()];
@@ -127,17 +123,17 @@ public class LongTermsAggregator extends BucketsAggregator {
             bucket.aggregations = bucketAggregations(bucket.bucketOrd);
             list[i] = bucket;
         }
-        return new LongTerms(name, order, valuesSource.formatter(), requiredSize, minDocCount, Arrays.asList(list));
+        return new LongTerms(name, order, formatter, bucketCountThresholds.getRequiredSize(), bucketCountThresholds.getMinDocCount(), Arrays.asList(list));
     }
 
     @Override
     public InternalAggregation buildEmptyAggregation() {
-        return new LongTerms(name, order, valuesSource.formatter(), requiredSize, minDocCount, Collections.<InternalTerms.Bucket>emptyList());
+        return new LongTerms(name, order, formatter, bucketCountThresholds.getRequiredSize(), bucketCountThresholds.getMinDocCount(), Collections.<InternalTerms.Bucket>emptyList());
     }
 
     @Override
-    public void doRelease() {
-        Releasables.release(bucketOrds);
+    public void doClose() {
+        Releasables.close(bucketOrds);
     }
 
 }

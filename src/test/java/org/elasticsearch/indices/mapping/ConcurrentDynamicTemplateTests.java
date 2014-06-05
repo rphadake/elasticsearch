@@ -52,16 +52,16 @@ public class ConcurrentDynamicTemplateTests extends ElasticsearchIntegrationTest
 
         int iters = scaledRandomIntBetween(5, 15);
         for (int i = 0; i < iters; i++) {
-            wipeIndices("test");
+            immutableCluster().wipeIndices("test");
             assertAcked(prepareCreate("test")
                     .addMapping(mappingType, mapping));
             ensureYellow();
             int numDocs = scaledRandomIntBetween(10, 100);
             final CountDownLatch latch = new CountDownLatch(numDocs);
-            final List<Throwable> throwable = new CopyOnWriteArrayList<Throwable>();
+            final List<Throwable> throwable = new CopyOnWriteArrayList<>();
             int currentID = 0;
             for (int j = 0; j < numDocs; j++) {
-                Map<String, Object> source = new HashMap<String, Object>();
+                Map<String, Object> source = new HashMap<>();
                 source.put(fieldName, "test-user");
                 client().prepareIndex("test", mappingType, Integer.toString(currentID++)).setSource(source).execute(new ActionListener<IndexResponse>() {
                     @Override

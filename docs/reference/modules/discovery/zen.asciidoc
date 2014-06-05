@@ -72,7 +72,9 @@ As part of the initial ping process a master of the cluster is either
 elected or joined to. This is done automatically. The
 `discovery.zen.ping_timeout` (which defaults to `3s`) allows to
 configure the election to handle cases of slow or congested networks
-(higher values assure less chance of failure). 
+(higher values assure less chance of failure). Once a node joins, it
+ will send a join request to the master (`discovery.zen.join_timeout`)
+ with a timeout defaulting at 10 times the ping timeout.
 
 Nodes can be excluded from becoming a master by setting `node.master` to
 `false`. Note, once a node is a client node (`node.client` set to
@@ -158,5 +160,5 @@ updates its own cluster state and replies to the master node, which waits for
 all nodes to respond, up to a timeout, before going ahead processing the next
 updates in the queue. The `discovery.zen.publish_timeout` is set by default
 to 30 seconds and can be changed dynamically through the
-<<cluster-update-settings,cluster update settings api>> coming[1.1.0, The
+<<cluster-update-settings,cluster update settings api>> added[1.1.0, The
 setting existed before but wasn't dynamic].

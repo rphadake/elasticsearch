@@ -30,6 +30,7 @@ import org.elasticsearch.index.snapshots.IndexShardRepository;
 import org.elasticsearch.repositories.RepositoryName;
 import org.elasticsearch.repositories.RepositorySettings;
 import org.elasticsearch.repositories.fs.FsRepository;
+import org.elasticsearch.threadpool.ThreadPool;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -71,8 +72,8 @@ public class MockRepository extends FsRepository {
     private volatile boolean blocked = false;
 
     @Inject
-    public MockRepository(RepositoryName name, RepositorySettings repositorySettings, IndexShardRepository indexShardRepository) throws IOException {
-        super(name, repositorySettings, indexShardRepository);
+    public MockRepository(RepositoryName name, ThreadPool threadPool, RepositorySettings repositorySettings, IndexShardRepository indexShardRepository) throws IOException {
+        super(name, repositorySettings, threadPool, indexShardRepository);
         randomControlIOExceptionRate = repositorySettings.settings().getAsDouble("random_control_io_exception_rate", 0.0);
         randomDataFileIOExceptionRate = repositorySettings.settings().getAsDouble("random_data_file_io_exception_rate", 0.0);
         blockOnControlFiles = repositorySettings.settings().getAsBoolean("block_on_control", false);
@@ -115,7 +116,7 @@ public class MockRepository extends FsRepository {
     }
 
     public class MockBlobStore extends BlobStoreWrapper {
-        ConcurrentMap<String, AtomicLong> accessCounts = new ConcurrentHashMap<String, AtomicLong>();
+        ConcurrentMap<String, AtomicLong> accessCounts = new ConcurrentHashMap<>();
 
         private long incrementAndGet(String path) {
             AtomicLong value = accessCounts.get(path);
@@ -231,19 +232,23 @@ public class MockRepository extends FsRepository {
                 }
             }
 
-            private void maybeIOExceptionOrBlock(String blobName, ImmutableBlobContainer.WriterListener listener) {
+            private boolean maybeIOExceptionOrBlock(String blobName, ImmutableBlobContainer.WriterListener listener) {
                 try {
                     maybeIOExceptionOrBlock(blobName);
+                    return true;
                 } catch (IOException ex) {
                     listener.onFailure(ex);
+                    return false;
                 }
             }
 
-            private void maybeIOExceptionOrBlock(String blobName, ImmutableBlobContainer.ReadBlobListener listener) {
+            private boolean maybeIOExceptionOrBlock(String blobName, ImmutableBlobContainer.ReadBlobListener listener) {
                 try {
                     maybeIOExceptionOrBlock(blobName);
+                    return true;
                 } catch (IOException ex) {
                     listener.onFailure(ex);
+                    return false;
                 }
             }
 
@@ -254,8 +259,9 @@ public class MockRepository extends FsRepository {
 
             @Override
             public void writeBlob(String blobName, InputStream is, long sizeInBytes, WriterListener listener) {
-                maybeIOExceptionOrBlock(blobName, listener);
-                super.writeBlob(blobName, is, sizeInBytes, listener);
+                if (maybeIOExceptionOrBlock(blobName, listener) ) {
+                    super.writeBlob(blobName, is, sizeInBytes, listener);
+                }
             }
 
             @Override
@@ -271,8 +277,9 @@ public class MockRepository extends FsRepository {
 
             @Override
             public void readBlob(String blobName, ReadBlobListener listener) {
-                maybeIOExceptionOrBlock(blobName, listener);
-                super.readBlob(blobName, listener);
+                if (maybeIOExceptionOrBlock(blobName, listener)) {
+                    super.readBlob(blobName, listener);
+                }
             }
 
             @Override

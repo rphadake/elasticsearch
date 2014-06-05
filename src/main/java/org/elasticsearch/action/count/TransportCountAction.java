@@ -112,7 +112,7 @@ public class TransportCountAction extends TransportBroadcastOperationAction<Coun
     }
 
     @Override
-    protected ShardCountRequest newShardRequest(ShardRouting shard, CountRequest request) {
+    protected ShardCountRequest newShardRequest(int numShards, ShardRouting shard, CountRequest request) {
         String[] filteringAliases = clusterService.state().metaData().filteringAliases(shard.index(), request.indices());
         return new ShardCountRequest(shard.index(), shard.id(), filteringAliases, request);
     }
@@ -199,7 +199,7 @@ public class TransportCountAction extends TransportBroadcastOperationAction<Coun
             }
         } finally {
             // this will also release the index searcher
-            context.release();
+            context.close();
             SearchContext.removeCurrent();
         }
     }

@@ -136,14 +136,14 @@ public abstract class FieldsVisitor extends StoredFieldVisitor {
         uid = null;
     }
 
-    private void addValue(String name, Object value) {
+    void addValue(String name, Object value) {
         if (fieldsValues == null) {
             fieldsValues = newHashMap();
         }
 
         List<Object> values = fieldsValues.get(name);
         if (values == null) {
-            values = new ArrayList<Object>(2);
+            values = new ArrayList<>(2);
             fieldsValues.put(name, values);
         }
         values.add(value);

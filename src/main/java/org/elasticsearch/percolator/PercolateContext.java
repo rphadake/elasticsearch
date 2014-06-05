@@ -22,16 +22,13 @@ import com.google.common.collect.ImmutableList;
 import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexableField;
-import org.apache.lucene.search.Filter;
-import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.Sort;
-import org.elasticsearch.ElasticsearchException;
+import org.apache.lucene.search.*;
 import org.elasticsearch.action.percolate.PercolateShardRequest;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.cache.recycler.PageCacheRecycler;
 import org.elasticsearch.common.lease.Releasable;
+import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.lucene.HashedBytesRef;
 import org.elasticsearch.common.text.StringText;
 import org.elasticsearch.common.util.BigArrays;
@@ -96,6 +93,7 @@ public class PercolateContext extends SearchContext {
     private final BigArrays bigArrays;
     private final ScriptService scriptService;
     private final ConcurrentMap<HashedBytesRef, Query> percolateQueries;
+    private final int numberOfShards;
     private String[] types;
 
     private Engine.Searcher docSearcher;
@@ -130,6 +128,7 @@ public class PercolateContext extends SearchContext {
         this.engineSearcher = indexShard.acquireSearcher("percolate");
         this.searcher = new ContextIndexSearcher(this, engineSearcher);
         this.scriptService = scriptService;
+        this.numberOfShards = request.getNumberOfShards();
     }
 
     public IndexSearcher docSearcher() {
@@ -145,7 +144,7 @@ public class PercolateContext extends SearchContext {
         lookup().setNextDocId(0);
         lookup().source().setNextSource(parsedDocument.source());
 
-        Map<String, SearchHitField> fields = new HashMap<String, SearchHitField>();
+        Map<String, SearchHitField> fields = new HashMap<>();
         for (IndexableField field : parsedDocument.rootDoc().getFields()) {
             fields.put(field.name(), new InternalSearchHitField(field.name(), ImmutableList.of()));
         }
@@ -210,18 +209,13 @@ public class PercolateContext extends SearchContext {
     }
 
     @Override
-    public boolean release() throws ElasticsearchException {
-        try {
+    protected void doClose() {
+        try (Releasable releasable = Releasables.wrap(engineSearcher, docSearcher)) {
             if (docSearcher != null) {
                 IndexReader indexReader = docSearcher.reader();
                 fieldDataService.clear(indexReader);
                 indexService.cache().clear(indexReader);
-                return docSearcher.release();
-            } else {
-                return false;
             }
-        } finally {
-            engineSearcher.release();
         }
     }
 
@@ -299,11 +293,6 @@ public class PercolateContext extends SearchContext {
 
     // Unused:
     @Override
-    public boolean clearAndRelease() {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
     public void preProcess() {
         throw new UnsupportedOperationException();
     }
@@ -340,7 +329,7 @@ public class PercolateContext extends SearchContext {
 
     @Override
     public int numberOfShards() {
-        throw new UnsupportedOperationException();
+        return numberOfShards;
     }
 
     @Override
@@ -658,6 +647,16 @@ public class PercolateContext extends SearchContext {
     }
 
     @Override
+    public void lastEmittedDoc(ScoreDoc doc) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ScoreDoc lastEmittedDoc() {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public DfsSearchResult dfsResult() {
         throw new UnsupportedOperationException();
     }
@@ -669,16 +668,6 @@ public class PercolateContext extends SearchContext {
 
     @Override
     public FetchSearchResult fetchResult() {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void addReleasable(Releasable releasable) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void clearReleasables() {
         throw new UnsupportedOperationException();
     }
 
@@ -704,6 +693,16 @@ public class PercolateContext extends SearchContext {
 
     @Override
     public MapperService.SmartNameObjectMapper smartNameObjectMapper(String name) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean useSlowScroll() {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public SearchContext useSlowScroll(boolean useSlowScroll) {
         throw new UnsupportedOperationException();
     }
 }

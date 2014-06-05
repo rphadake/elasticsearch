@@ -20,7 +20,6 @@
 package org.elasticsearch.repositories.blobstore;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.primitives.Longs;
 import org.elasticsearch.Version;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
@@ -177,7 +176,7 @@ public class BlobStoreSnapshot implements Snapshot {
      */
     @Override
     public int compareTo(Snapshot o) {
-        return Longs.compare(startTime, ((BlobStoreSnapshot) o).startTime);
+        return Long.compare(startTime, ((BlobStoreSnapshot) o).startTime);
     }
 
     /**
@@ -287,6 +286,16 @@ public class BlobStoreSnapshot implements Snapshot {
          */
         public Builder success() {
             this.state = SnapshotState.SUCCESS;
+            return this;
+        }
+
+        /**
+         * Marks snapshot as partially successful
+         *
+         * @return this builder
+         */
+        public Builder partial() {
+            this.state = SnapshotState.PARTIAL;
             return this;
         }
 
@@ -476,13 +485,13 @@ public class BlobStoreSnapshot implements Snapshot {
                                 }
                             } else if (token == XContentParser.Token.START_ARRAY) {
                                 if ("indices".equals(currentFieldName)) {
-                                    ArrayList<String> indices = new ArrayList<String>();
+                                    ArrayList<String> indices = new ArrayList<>();
                                     while (parser.nextToken() != XContentParser.Token.END_ARRAY) {
                                         indices.add(parser.text());
                                     }
                                     builder.indices(indices);
                                 } else if ("failures".equals(currentFieldName)) {
-                                    ArrayList<SnapshotShardFailure> failures = new ArrayList<SnapshotShardFailure>();
+                                    ArrayList<SnapshotShardFailure> failures = new ArrayList<>();
                                     while (parser.nextToken() != XContentParser.Token.END_ARRAY) {
                                         failures.add(SnapshotShardFailure.fromXContent(parser));
                                     }

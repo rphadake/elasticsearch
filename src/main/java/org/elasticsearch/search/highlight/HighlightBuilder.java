@@ -40,6 +40,12 @@ public class HighlightBuilder implements ToXContent {
 
     private String tagsSchema;
 
+    private Boolean highlightFilter;
+
+    private Integer fragmentSize;
+
+    private Integer numOfFragments;
+
     private String[] preTags;
 
     private String[] postTags;
@@ -49,6 +55,10 @@ public class HighlightBuilder implements ToXContent {
     private String encoder;
 
     private Boolean requireFieldMatch;
+
+    private Integer boundaryMaxScan;
+
+    private char[] boundaryChars;
 
     private String highlighterType;
 
@@ -63,6 +73,8 @@ public class HighlightBuilder implements ToXContent {
     private Map<String, Object> options;
 
     private Boolean forceSource;
+
+    private boolean useExplicitFieldOrder = false;
 
     /**
      * Adds a field to be highlighted with default fragment size of 100 characters, and
@@ -149,6 +161,20 @@ public class HighlightBuilder implements ToXContent {
         return this;
     }
 
+    public HighlightBuilder highlightFilter(boolean highlightFilter) {
+        this.highlightFilter = highlightFilter;
+        return this;
+    }
+
+    public HighlightBuilder fragmentSize(Integer fragmentSize) {
+        this.fragmentSize = fragmentSize;
+        return this;
+    }
+
+    public HighlightBuilder numOfFragments(Integer numOfFragments) {
+        this.numOfFragments = numOfFragments;
+        return this;
+    }
 
     /**
      * Set encoder for the highlighting
@@ -189,6 +215,16 @@ public class HighlightBuilder implements ToXContent {
 
     public HighlightBuilder requireFieldMatch(boolean requireFieldMatch) {
         this.requireFieldMatch = requireFieldMatch;
+        return this;
+    }
+
+    public HighlightBuilder boundaryMaxScan(Integer boundaryMaxScan) {
+        this.boundaryMaxScan = boundaryMaxScan;
+        return this;
+    }
+
+    public HighlightBuilder boundaryChars(char[] boundaryChars) {
+        this.boundaryChars = boundaryChars;
         return this;
     }
 
@@ -255,6 +291,15 @@ public class HighlightBuilder implements ToXContent {
         return this;
     }
 
+    /**
+     * Send the fields to be highlighted using a syntax that is specific about the order in which they should be highlighted.
+     * @return this for chaining
+     */
+    public HighlightBuilder useExplicitFieldOrder(boolean useExplicitFieldOrder) {
+        this.useExplicitFieldOrder = useExplicitFieldOrder;
+        return this;
+    }
+
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject("highlight");
@@ -270,11 +315,26 @@ public class HighlightBuilder implements ToXContent {
         if (order != null) {
             builder.field("order", order);
         }
+        if (highlightFilter != null) {
+            builder.field("highlight_filter", highlightFilter);
+        }
+        if (fragmentSize != null) {
+            builder.field("fragment_size", fragmentSize);
+        }
+        if (numOfFragments != null) {
+            builder.field("number_of_fragments", numOfFragments);
+        }
         if (encoder != null) {
             builder.field("encoder", encoder);
         }
         if (requireFieldMatch != null) {
             builder.field("require_field_match", requireFieldMatch);
+        }
+        if (boundaryMaxScan != null) {
+            builder.field("boundary_max_scan", boundaryMaxScan);
+        }
+        if (boundaryChars != null) {
+            builder.field("boundary_chars", boundaryChars);
         }
         if (highlighterType != null) {
             builder.field("type", highlighterType);
@@ -298,8 +358,15 @@ public class HighlightBuilder implements ToXContent {
             builder.field("force_source", forceSource);
         }
         if (fields != null) {
-            builder.startObject("fields");
+            if (useExplicitFieldOrder) {
+                builder.startArray("fields");
+            } else {
+                builder.startObject("fields");
+            }
             for (Field field : fields) {
+                if (useExplicitFieldOrder) {
+                    builder.startObject();
+                }
                 builder.startObject(field.name());
                 if (field.preTags != null) {
                     builder.field("pre_tags", field.preTags);
@@ -357,10 +424,16 @@ public class HighlightBuilder implements ToXContent {
                 }
 
                 builder.endObject();
+                if (useExplicitFieldOrder) {
+                    builder.endObject();
+                }
             }
-            builder.endObject();
+            if (useExplicitFieldOrder) {
+                builder.endArray();
+            } else {
+                builder.endObject();
+            }
         }
-
         builder.endObject();
         return builder;
     }

@@ -18,9 +18,8 @@
  */
 package org.elasticsearch.search.aggregations;
 
-import com.google.common.collect.Iterables;
-import com.google.common.collect.UnmodifiableIterator;
 import org.apache.lucene.index.AtomicReaderContext;
+import org.elasticsearch.ElasticsearchIllegalArgumentException;
 import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.util.ObjectArray;
 import org.elasticsearch.search.aggregations.Aggregator.BucketAggregationMode;
@@ -28,9 +27,9 @@ import org.elasticsearch.search.aggregations.support.AggregationContext;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  *
@@ -39,7 +38,7 @@ public class AggregatorFactories {
 
     public static final AggregatorFactories EMPTY = new Empty();
 
-    private final AggregatorFactory[] factories;
+    private AggregatorFactory[] factories;
 
     public static Builder builder() {
         return new Builder();
@@ -82,9 +81,6 @@ public class AggregatorFactories {
                     long arraySize = estimatedBucketsCount > 0 ?  estimatedBucketsCount : 1;
                     aggregators = bigArrays.newObjectArray(arraySize);
                     aggregators.set(0, first);
-                    for (long i = 1; i < arraySize; ++i) {
-                        aggregators.set(i, createAndRegisterContextAware(parent.context(), factory, parent, estimatedBucketsCount));
-                    }
                 }
 
                 @Override
@@ -93,7 +89,7 @@ public class AggregatorFactories {
                 }
 
                 @Override
-                protected void doPostCollection() {
+                protected void doPostCollection() throws IOException {
                     for (long i = 0; i < aggregators.size(); ++i) {
                         final Aggregator aggregator = aggregators.get(i);
                         if (aggregator != null) {
@@ -134,30 +130,8 @@ public class AggregatorFactories {
                 }
 
                 @Override
-                public void doRelease() {
-                    final Iterable<Aggregator> aggregatorsIter = new Iterable<Aggregator>() {
-
-                        @Override
-                        public Iterator<Aggregator> iterator() {
-                            return new UnmodifiableIterator<Aggregator>() {
-
-                                long i = 0;
-
-                                @Override
-                                public boolean hasNext() {
-                                    return i < aggregators.size();
-                                }
-
-                                @Override
-                                public Aggregator next() {
-                                    return aggregators.get(i++);
-                                }
-
-                            };
-                        }
-
-                    };
-                    Releasables.release(Iterables.concat(aggregatorsIter, Collections.singleton(aggregators)));
+                public void doClose() {
+                    Releasables.close(aggregators);
                 }
             };
         }
@@ -212,9 +186,13 @@ public class AggregatorFactories {
 
     public static class Builder {
 
-        private List<AggregatorFactory> factories = new ArrayList<AggregatorFactory>();
+        private final Set<String> names = new HashSet<>();
+        private final List<AggregatorFactory> factories = new ArrayList<>();
 
         public Builder add(AggregatorFactory factory) {
+            if (!names.add(factory.name)) {
+                throw new ElasticsearchIllegalArgumentException("Two sibling aggregations cannot have the same name: [" + factory.name + "]");
+            }
             factories.add(factory);
             return this;
         }

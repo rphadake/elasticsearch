@@ -37,6 +37,7 @@ import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
 import static org.elasticsearch.index.query.QueryBuilders.matchQuery;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertMatchCount;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
 import static org.hamcrest.Matchers.arrayWithSize;
 import static org.hamcrest.Matchers.equalTo;
 
@@ -108,7 +109,7 @@ public class PercolatorFacetsAndAggregationsTests extends ElasticsearchIntegrati
                 List<Aggregation> aggregations = response.getAggregations().asList();
                 assertThat(aggregations.size(), equalTo(1));
                 assertThat(aggregations.get(0).getName(), equalTo("a"));
-                List<Terms.Bucket> buckets = new ArrayList<Terms.Bucket>(((Terms) aggregations.get(0)).getBuckets());
+                List<Terms.Bucket> buckets = new ArrayList<>(((Terms) aggregations.get(0)).getBuckets());
                 assertThat(buckets.size(), equalTo(1));
                 assertThat(buckets.get(0).getKeyAsText().string(), equalTo("b"));
                 assertThat(buckets.get(0).getDocCount(), equalTo((long) expectedCount[i % values.length]));
@@ -120,6 +121,18 @@ public class PercolatorFacetsAndAggregationsTests extends ElasticsearchIntegrati
                 assertThat(((TermsFacet) response.getFacets().facets().get(0)).getEntries().get(0).getTerm().string(), equalTo("b"));
             }
         }
+    }
+
+    @Test
+    public void testSignificantAggs() throws Exception {
+        client().admin().indices().prepareCreate("test").execute().actionGet();
+        ensureGreen();
+        PercolateRequestBuilder percolateRequestBuilder = client().preparePercolate()
+                .setIndices("test").setDocumentType("type")
+                .setPercolateDoc(docBuilder().setDoc(jsonBuilder().startObject().field("field1", "value").endObject()))
+                .addAggregation(AggregationBuilders.significantTerms("a").field("field2"));
+        PercolateResponse response = percolateRequestBuilder.get();
+        assertNoFailures(response);
     }
 
 }

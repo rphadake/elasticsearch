@@ -40,18 +40,19 @@ import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.ElasticsearchIntegrationTest.ClusterScope;
-import org.elasticsearch.test.ElasticsearchIntegrationTest.Scope;
 import org.junit.Test;
 
 import java.io.File;
 import java.util.Arrays;
+import java.util.List;
 
 import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilder;
+import static org.elasticsearch.test.ElasticsearchIntegrationTest.*;
 import static org.hamcrest.Matchers.equalTo;
 
 /**
  */
-@ClusterScope(scope = Scope.TEST, numNodes = 0)
+@ClusterScope(scope = Scope.TEST, numDataNodes = 0)
 public class ClusterRerouteTests extends ElasticsearchIntegrationTest {
 
     private final ESLogger logger = Loggers.getLogger(ClusterRerouteTests.class);
@@ -75,8 +76,9 @@ public class ClusterRerouteTests extends ElasticsearchIntegrationTest {
     }
 
     private void rerouteWithCommands(Settings commonSettings) throws Exception {
-        String node_1 = cluster().startNode(commonSettings);
-        String node_2 = cluster().startNode(commonSettings);
+        List<String> nodesIds = cluster().startNodesAsync(2, commonSettings).get();
+        final String node_1 = nodesIds.get(0);
+        final String node_2 = nodesIds.get(1);
 
         logger.info("--> create an index with 1 shard, 1 replica, nothing should allocate");
         client().admin().indices().prepareCreate("test")
@@ -157,7 +159,7 @@ public class ClusterRerouteTests extends ElasticsearchIntegrationTest {
         logger.info("--> starting 2 nodes");
         String node_1 = cluster().startNode(commonSettings);
         cluster().startNode(commonSettings);
-        assertThat(cluster().size(), equalTo(2));
+        assertThat(immutableCluster().size(), equalTo(2));
         ClusterHealthResponse healthResponse = client().admin().cluster().prepareHealth().setWaitForNodes("2").execute().actionGet();
         assertThat(healthResponse.isTimedOut(), equalTo(false));
 
@@ -228,7 +230,7 @@ public class ClusterRerouteTests extends ElasticsearchIntegrationTest {
         logger.info("--> starting a node");
         String node_1 = cluster().startNode(commonSettings);
 
-        assertThat(cluster().size(), equalTo(1));
+        assertThat(immutableCluster().size(), equalTo(1));
         ClusterHealthResponse healthResponse = client().admin().cluster().prepareHealth().setWaitForNodes("1").execute().actionGet();
         assertThat(healthResponse.isTimedOut(), equalTo(false));
 
@@ -247,7 +249,7 @@ public class ClusterRerouteTests extends ElasticsearchIntegrationTest {
 
         logger.info("--> starting a second node");
         String node_2 = cluster().startNode(commonSettings);
-        assertThat(cluster().size(), equalTo(2));
+        assertThat(immutableCluster().size(), equalTo(2));
         healthResponse = client().admin().cluster().prepareHealth().setWaitForNodes("2").execute().actionGet();
         assertThat(healthResponse.isTimedOut(), equalTo(false));
 

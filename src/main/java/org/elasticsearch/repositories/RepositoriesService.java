@@ -104,7 +104,7 @@ public class RepositoriesService extends AbstractComponent implements ClusterSta
                     repositories = new RepositoriesMetaData(new RepositoryMetaData(request.name, request.type, request.settings));
                 } else {
                     boolean found = false;
-                    List<RepositoryMetaData> repositoriesMetaData = new ArrayList<RepositoryMetaData>(repositories.repositories().size() + 1);
+                    List<RepositoryMetaData> repositoriesMetaData = new ArrayList<>(repositories.repositories().size() + 1);
 
                     for (RepositoryMetaData repositoryMetaData : repositories.repositories()) {
                         if (repositoryMetaData.name().equals(newRepositoryMetaData.name())) {
@@ -181,7 +181,7 @@ public class RepositoriesService extends AbstractComponent implements ClusterSta
                 MetaData.Builder mdBuilder = MetaData.builder(currentState.metaData());
                 RepositoriesMetaData repositories = metaData.custom(RepositoriesMetaData.TYPE);
                 if (repositories != null && repositories.repositories().size() > 0) {
-                    List<RepositoryMetaData> repositoriesMetaData = new ArrayList<RepositoryMetaData>(repositories.repositories().size());
+                    List<RepositoryMetaData> repositoriesMetaData = new ArrayList<>(repositories.repositories().size());
                     boolean changed = false;
                     for (RepositoryMetaData repositoryMetaData : repositories.repositories()) {
                         if (Regex.simpleMatch(request.name, repositoryMetaData.name())) {
@@ -254,10 +254,13 @@ public class RepositoriesService extends AbstractComponent implements ClusterSta
                 return;
             }
 
+            logger.trace("processing new index repositories for state version [{}]", event.state().version());
+
             Map<String, RepositoryHolder> survivors = newHashMap();
             // First, remove repositories that are no longer there
             for (Map.Entry<String, RepositoryHolder> entry : repositories.entrySet()) {
                 if (newMetaData == null || newMetaData.repository(entry.getKey()) == null) {
+                    logger.debug("unregistering repository [{}]", entry.getKey());
                     closeRepository(entry.getKey(), entry.getValue());
                 } else {
                     survivors.put(entry.getKey(), entry.getValue());
@@ -273,6 +276,7 @@ public class RepositoriesService extends AbstractComponent implements ClusterSta
                         // Found previous version of this repository
                         if (!holder.type.equals(repositoryMetaData.type()) || !holder.settings.equals(repositoryMetaData.settings())) {
                             // Previous version is different from the version in settings
+                            logger.debug("updating repository [{}]", repositoryMetaData.name());
                             closeRepository(repositoryMetaData.name(), holder);
                             holder = createRepositoryHolder(repositoryMetaData);
                         }
@@ -280,6 +284,7 @@ public class RepositoriesService extends AbstractComponent implements ClusterSta
                         holder = createRepositoryHolder(repositoryMetaData);
                     }
                     if (holder != null) {
+                        logger.debug("registering repository [{}]", repositoryMetaData.name());
                         builder.put(repositoryMetaData.name(), holder);
                     }
                 }

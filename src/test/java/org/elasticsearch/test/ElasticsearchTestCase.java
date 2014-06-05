@@ -18,6 +18,7 @@
  */
 package org.elasticsearch.test;
 
+import com.carrotsearch.randomizedtesting.RandomizedTest;
 import com.carrotsearch.randomizedtesting.annotations.*;
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakScope.Scope;
 import com.google.common.base.Predicate;
@@ -27,19 +28,19 @@ import org.apache.lucene.util.AbstractRandomizedTest;
 import org.apache.lucene.util.LuceneTestCase;
 import org.apache.lucene.util.TimeUnits;
 import org.elasticsearch.Version;
-import org.elasticsearch.cache.recycler.MockPageCacheRecycler;
+import org.elasticsearch.client.Requests;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.util.concurrent.EsAbortPolicy;
 import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.test.cache.recycler.MockBigArrays;
-import org.elasticsearch.test.engine.MockInternalEngine;
+import org.elasticsearch.test.cache.recycler.MockPageCacheRecycler;
 import org.elasticsearch.test.junit.listeners.LoggingListener;
 import org.elasticsearch.test.store.MockDirectoryHelper;
 import org.junit.After;
 import org.junit.AfterClass;
-import org.junit.Before;
 import org.junit.BeforeClass;
 
 import java.io.Closeable;
@@ -49,8 +50,10 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.net.URI;
 import java.util.*;
-import java.util.Map.Entry;
 import java.util.concurrent.TimeUnit;
+
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAllFilesClosed;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAllSearchersClosed;
 
 /**
  * Base testcase for randomized unit testing with Elasticsearch
@@ -122,72 +125,14 @@ public abstract class ElasticsearchTestCase extends AbstractRandomizedTest {
         return new File(uri);
     }
 
-    @Before
-    public void resetPageTracking() {
-        MockPageCacheRecycler.reset();
-    }
-
     @After
-    public void ensureAllPagesReleased() {
+    public void ensureAllPagesReleased() throws Exception {
         MockPageCacheRecycler.ensureAllPagesAreReleased();
     }
 
-    @Before
-    public void resetArrayTracking() {
-        // useful if there are tests that use MockBigArrays but don't inherit from ElasticsearchTestCase
-        MockBigArrays.reset();
-    }
-
     @After
-    public void ensureAllArraysReleased() {
+    public void ensureAllArraysReleased() throws Exception {
         MockBigArrays.ensureAllArraysAreReleased();
-    }
-
-    public static void ensureAllFilesClosed() throws IOException {
-        try {
-            for (MockDirectoryHelper.ElasticsearchMockDirectoryWrapper w : MockDirectoryHelper.wrappers) {
-                if (w.isOpen()) {
-                    w.closeWithRuntimeException();
-                }
-            }
-        } finally {
-            forceClearMockWrappers();
-        }
-    }
-
-    public static void ensureAllSearchersClosed() {
-        /* in some cases we finish a test faster than the freeContext calls make it to the
-         * shards. Let's wait for some time if there are still searchers. If the are really 
-         * pending we will fail anyway.*/
-        try {
-            if (awaitBusy(new Predicate<Object>() {
-                public boolean apply(Object o) {
-                    return MockInternalEngine.INFLIGHT_ENGINE_SEARCHERS.isEmpty();
-                }
-            }, 5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (InterruptedException ex) {
-            if (MockInternalEngine.INFLIGHT_ENGINE_SEARCHERS.isEmpty()) {
-                return;
-            }
-        }
-        try {
-            RuntimeException ex = null;
-            StringBuilder builder = new StringBuilder("Unclosed Searchers instance for shards: [");
-            for (Entry<MockInternalEngine.AssertingSearcher, RuntimeException> entry : MockInternalEngine.INFLIGHT_ENGINE_SEARCHERS.entrySet()) {
-                ex = entry.getValue();
-                builder.append(entry.getKey().shardId()).append(",");
-            }
-            builder.append("]");
-            throw new RuntimeException(builder.toString(), ex);
-        } finally {
-            MockInternalEngine.INFLIGHT_ENGINE_SEARCHERS.clear();
-        }
-    }
-
-    public static void forceClearMockWrappers() {
-        MockDirectoryHelper.wrappers.clear();
     }
 
     public static boolean hasUnclosedWrapper() {
@@ -200,27 +145,34 @@ public abstract class ElasticsearchTestCase extends AbstractRandomizedTest {
     }
 
     @BeforeClass
-    public static void registerMockDirectoryHooks() throws Exception {
+    public static void setBeforeClass() throws Exception {
         closeAfterSuite(new Closeable() {
             @Override
             public void close() throws IOException {
-                ensureAllFilesClosed();
+                assertAllFilesClosed();
             }
         });
-
         closeAfterSuite(new Closeable() {
             @Override
             public void close() throws IOException {
-                ensureAllSearchersClosed();
+                assertAllSearchersClosed();
             }
         });
         defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler(new ElasticsearchUncaughtExceptionHandler(defaultHandler));
+        Requests.CONTENT_TYPE = randomXContentType();
+        Requests.INDEX_CONTENT_TYPE = randomXContentType();
+    }
+
+    private static XContentType randomXContentType() {
+        return randomFrom(XContentType.values());
     }
 
     @AfterClass
-    public static void resetUncaughtExceptionHandler() {
+    public static void resetAfterClass() {
         Thread.setDefaultUncaughtExceptionHandler(defaultHandler);
+        Requests.CONTENT_TYPE = XContentType.SMILE;
+        Requests.INDEX_CONTENT_TYPE = XContentType.JSON;
     }
 
     public static boolean maybeDocValues() {
@@ -231,7 +183,7 @@ public abstract class ElasticsearchTestCase extends AbstractRandomizedTest {
 
     static {
         Field[] declaredFields = Version.class.getDeclaredFields();
-        Set<Integer> ids = new HashSet<Integer>();
+        Set<Integer> ids = new HashSet<>();
         for (Field field : declaredFields) {
             final int mod = field.getModifiers();
             if (Modifier.isStatic(mod) && Modifier.isFinal(mod) && Modifier.isPublic(mod)) {
@@ -245,7 +197,7 @@ public abstract class ElasticsearchTestCase extends AbstractRandomizedTest {
                 }
             }
         }
-        List<Integer> idList = new ArrayList<Integer>(ids);
+        List<Integer> idList = new ArrayList<>(ids);
         Collections.sort(idList);
         Collections.reverse(idList);
         ImmutableList.Builder<Version> version = ImmutableList.builder();
@@ -339,5 +291,22 @@ public abstract class ElasticsearchTestCase extends AbstractRandomizedTest {
         }
     }
 
+    public static <T> T randomFrom(T... values) {
+        return RandomizedTest.randomFrom(values);
+    }
 
+    public static String[] generateRandomStringArray(int maxArraySize, int maxStringSize, boolean allowNull) {
+        if (allowNull && randomBoolean()) {
+            return null;
+        }
+        String[] array = new String[randomInt(maxArraySize)]; // allow empty arrays
+        for (int i = 0; i < array.length; i++) {
+            array[i] = randomAsciiOfLength(maxStringSize);
+        }
+        return array;
+    }
+
+    public static String[] generateRandomStringArray(int maxArraySize, int maxStringSize) {
+        return generateRandomStringArray(maxArraySize, maxStringSize, false);
+    }
 }

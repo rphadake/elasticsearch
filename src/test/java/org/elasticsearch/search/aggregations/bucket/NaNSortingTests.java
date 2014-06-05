@@ -29,13 +29,14 @@ import org.elasticsearch.search.aggregations.metrics.MetricsAggregationBuilder;
 import org.elasticsearch.search.aggregations.metrics.avg.Avg;
 import org.elasticsearch.search.aggregations.metrics.stats.extended.ExtendedStats;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
-import org.junit.Before;
 import org.junit.Test;
 
 import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.elasticsearch.search.aggregations.AggregationBuilders.*;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertSearchResponse;
 import static org.hamcrest.core.IsNull.notNullValue;
 
+@ElasticsearchIntegrationTest.SuiteScopeTest
 public class NaNSortingTests extends ElasticsearchIntegrationTest {
 
     private enum SubAggregation {
@@ -93,8 +94,8 @@ public class NaNSortingTests extends ElasticsearchIntegrationTest {
         public abstract double getValue(Aggregation aggregation);
     }
 
-    @Before
-    public void init() throws Exception {
+    @Override
+    public void setupSuiteScopeCluster() throws Exception {
         createIndex("idx");
         final int numDocs = randomIntBetween(2, 10);
         for (int i = 0; i < numDocs; ++i) {
@@ -138,6 +139,7 @@ public class NaNSortingTests extends ElasticsearchIntegrationTest {
                 .addAggregation(terms("terms").field(fieldName).subAggregation(agg.builder()).order(Terms.Order.aggregation(agg.sortKey(), asc)))
                 .execute().actionGet();
 
+        assertSearchResponse(response);
         final Terms terms = response.getAggregations().get("terms");
         assertCorrectlySorted(terms, asc, agg);
     }
@@ -166,6 +168,7 @@ public class NaNSortingTests extends ElasticsearchIntegrationTest {
                         .field("long_value").interval(randomIntBetween(1, 2)).subAggregation(agg.builder()).order(Histogram.Order.aggregation(agg.sortKey(), asc)))
                 .execute().actionGet();
 
+        assertSearchResponse(response);
         final Histogram histo = response.getAggregations().get("histo");
         assertCorrectlySorted(histo, asc, agg);
     }

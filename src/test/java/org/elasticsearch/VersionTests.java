@@ -60,5 +60,38 @@ public class VersionTests extends ElasticsearchTestCase {
             assertThat(version.luceneVersion, sameInstance(Version.fromId(version.id).luceneVersion));
         }
     }
+    @Test
+    public void testCURRENTIsLatest() {
+        final int iters = scaledRandomIntBetween(100, 1000);
+        for (int i = 0; i < iters; i++) {
+            Version version = randomVersion();
+            if (version != Version.CURRENT) {
+                assertThat("Version: " + version + " should be before: " + Version.CURRENT + " but wasn't", version.before(Version.CURRENT), is(true));
+            }
+        }
+    }
 
+    @Test
+    public void testVersionFromString() {
+        final int iters = scaledRandomIntBetween(100, 1000);
+        for (int i = 0; i < iters; i++) {
+            Version version = randomVersion();
+            assertThat(Version.fromString(version.number()), sameInstance(version));
+        }
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testTooLongVersionFromString() {
+        Version.fromString("1.0.0.1.3");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testTooShortVersionFromString() {
+        Version.fromString("1.0");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testWrongVersionFromString() {
+        Version.fromString("WRONG.VERSION");
+    }
 }

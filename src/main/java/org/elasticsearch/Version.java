@@ -20,6 +20,7 @@
 package org.elasticsearch;
 
 import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.inject.AbstractModule;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -146,6 +147,10 @@ public class Version implements Serializable {
     public static final Version V_0_90_11 = new Version(V_0_90_11_ID, false, org.apache.lucene.util.Version.LUCENE_46);
     public static final int V_0_90_12_ID = /*00*/901299;
     public static final Version V_0_90_12 = new Version(V_0_90_12_ID, false, org.apache.lucene.util.Version.LUCENE_46);
+    public static final int V_0_90_13_ID = /*00*/901399;
+    public static final Version V_0_90_13 = new Version(V_0_90_13_ID, false, org.apache.lucene.util.Version.LUCENE_46);
+    public static final int V_0_90_14_ID = /*00*/901499;
+    public static final Version V_0_90_14 = new Version(V_0_90_14_ID, false, org.apache.lucene.util.Version.LUCENE_46);
 
     public static final int V_1_0_0_Beta1_ID = /*00*/1000001;
     public static final Version V_1_0_0_Beta1 = new Version(V_1_0_0_Beta1_ID, false, org.apache.lucene.util.Version.LUCENE_45);
@@ -157,10 +162,28 @@ public class Version implements Serializable {
     public static final Version V_1_0_0_RC2 = new Version(V_1_0_0_RC2_ID, false, org.apache.lucene.util.Version.LUCENE_46);
     public static final int V_1_0_0_ID = /*00*/1000099;
     public static final Version V_1_0_0 = new Version(V_1_0_0_ID, false, org.apache.lucene.util.Version.LUCENE_46);
+    public static final int V_1_0_1_ID = /*00*/1000199;
+    public static final Version V_1_0_1 = new Version(V_1_0_1_ID, false, org.apache.lucene.util.Version.LUCENE_46);
+    public static final int V_1_0_2_ID = /*00*/1000299;
+    public static final Version V_1_0_2 = new Version(V_1_0_2_ID, false, org.apache.lucene.util.Version.LUCENE_46);
+    public static final int V_1_0_3_ID = /*00*/1000399;
+    public static final Version V_1_0_3 = new Version(V_1_0_3_ID, false, org.apache.lucene.util.Version.LUCENE_46);
+    public static final int V_1_0_4_ID = /*00*/1000499;
+    public static final Version V_1_0_4 = new Version(V_1_0_3_ID, false, org.apache.lucene.util.Version.LUCENE_46);
     public static final int V_1_1_0_ID = /*00*/1010099;
-    public static final Version V_1_1_0 = new Version(V_1_1_0_ID, true, org.apache.lucene.util.Version.LUCENE_47);
+    public static final Version V_1_1_0 = new Version(V_1_1_0_ID, false, org.apache.lucene.util.Version.LUCENE_47);
+    public static final int V_1_1_1_ID = /*00*/1010199;
+    public static final Version V_1_1_1 = new Version(V_1_1_1_ID, false, org.apache.lucene.util.Version.LUCENE_47);
+    public static final int V_1_1_2_ID = /*00*/1010299;
+    public static final Version V_1_1_2 = new Version(V_1_1_2_ID, false, org.apache.lucene.util.Version.LUCENE_47);
+    public static final int V_1_2_0_ID = /*00*/1020099;
+    public static final Version V_1_2_0 = new Version(V_1_2_0_ID, false, org.apache.lucene.util.Version.LUCENE_48);
+    public static final int V_1_2_1_ID = /*00*/1020199;
+    public static final Version V_1_2_1 = new Version(V_1_2_1_ID, false, org.apache.lucene.util.Version.LUCENE_48);
+    public static final int V_1_3_0_ID = /*00*/1030099;
+    public static final Version V_1_3_0 = new Version(V_1_3_0_ID, false, org.apache.lucene.util.Version.LUCENE_48);
     public static final int V_2_0_0_ID = /*00*/2000099;
-    public static final Version V_2_0_0 = new Version(V_2_0_0_ID, true, org.apache.lucene.util.Version.LUCENE_47);
+    public static final Version V_2_0_0 = new Version(V_2_0_0_ID, true, org.apache.lucene.util.Version.LUCENE_48);
 
     public static final Version CURRENT = V_2_0_0;
 
@@ -176,8 +199,26 @@ public class Version implements Serializable {
         switch (id) {
             case V_2_0_0_ID:
                 return V_2_0_0;
+            case V_1_3_0_ID:
+                return V_1_3_0;
+            case V_1_2_1_ID:
+                return V_1_2_1;
+            case V_1_2_0_ID:
+                return V_1_2_0;
+            case V_1_1_2_ID:
+                return V_1_1_2;
+            case V_1_1_1_ID:
+                return V_1_1_1;
             case V_1_1_0_ID:
                 return V_1_1_0;
+            case V_1_0_4_ID:
+                return V_1_0_4;
+            case V_1_0_3_ID:
+                return V_1_0_3;
+            case V_1_0_2_ID:
+                return V_1_0_2;
+            case V_1_0_1_ID:
+                return V_1_0_1;
             case V_1_0_0_ID:
                 return V_1_0_0;
             case V_1_0_0_RC2_ID:
@@ -188,6 +229,10 @@ public class Version implements Serializable {
                 return V_1_0_0_Beta2;
             case V_1_0_0_Beta1_ID:
                 return V_1_0_0_Beta1;
+            case V_0_90_14_ID:
+                return V_0_90_14;
+            case V_0_90_13_ID:
+                return V_0_90_13;
             case V_0_90_12_ID:
                 return V_0_90_12;
             case V_0_90_11_ID:
@@ -308,6 +353,43 @@ public class Version implements Serializable {
      */
     public static Version smallest(Version version1, Version version2) {
         return version1.id < version2.id ? version1 : version2;
+    }
+
+    /**
+     * Returns the version given its string representation, current version if the argument is null or empty
+     */
+    public static Version fromString(String version) {
+        if (!Strings.hasLength(version)) {
+            return Version.CURRENT;
+        }
+
+        String[] parts = version.split("\\.");
+        if (parts.length < 3 || parts.length > 4) {
+            throw new IllegalArgumentException("the version needs to contain major, minor and revision, and optionally the build");
+        }
+
+        try {
+            //we reverse the version id calculation based on some assumption as we can't reliably reverse the modulo
+            int major = Integer.parseInt(parts[0]) * 1000000;
+            int minor = Integer.parseInt(parts[1]) * 10000;
+            int revision = Integer.parseInt(parts[2]) * 100;
+
+            int build = 99;
+            if (parts.length == 4) {
+                String buildStr = parts[3];
+                if (buildStr.startsWith("Beta")) {
+                    build = Integer.parseInt(buildStr.substring(4));
+                }
+                if (buildStr.startsWith("RC")) {
+                    build = Integer.parseInt(buildStr.substring(2)) + 50;
+                }
+            }
+
+            return fromId(major + minor + revision + build);
+
+        } catch(NumberFormatException e) {
+            throw new IllegalArgumentException("unable to parse version " + version, e);
+        }
     }
 
     public final int id;

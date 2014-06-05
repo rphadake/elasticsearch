@@ -19,6 +19,7 @@
 
 package org.elasticsearch.search.suggest.context;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.lucene.analysis.PrefixAnalyzer;
@@ -43,7 +44,7 @@ import java.util.*;
  */
 public class CategoryContextMapping extends ContextMapping {
 
-    protected static final String TYPE = "field";
+    protected static final String TYPE = "category";
 
     private static final String FIELD_FIELDNAME = "path";
     private static final String DEFAULT_FIELDNAME = "_type";
@@ -179,7 +180,7 @@ public class CategoryContextMapping extends ContextMapping {
         Iterable<? extends CharSequence> values;
         Token token = parser.currentToken();
         if (token == Token.START_ARRAY) {
-            ArrayList<String> list = new ArrayList<String>();
+            ArrayList<String> list = new ArrayList<>();
             while ((token = parser.nextToken()) != Token.END_ARRAY) {
                 list.add(parser.text());
             }
@@ -212,6 +213,15 @@ public class CategoryContextMapping extends ContextMapping {
         return false;
     }
 
+    @Override
+    public int hashCode() {
+        int hashCode = fieldName.hashCode();
+        for (CharSequence seq : defaultValues) {
+            hashCode = 31 * hashCode + seq.hashCode();
+        }
+        return hashCode;
+    }
+
     private static class FieldConfig extends ContextConfig {
 
         private final String fieldname;
@@ -226,16 +236,18 @@ public class CategoryContextMapping extends ContextMapping {
 
         @Override
         protected TokenStream wrapTokenStream(Document doc, TokenStream stream) {
-            if(values != null) {
+            if (values != null) {
                 return new PrefixAnalyzer.PrefixTokenFilter(stream, ContextMapping.SEPARATOR, values);
+            // if fieldname is default, BUT our default values are set, we take that one
+            } else if ((doc.getFields(fieldname).length == 0 || fieldname.equals(DEFAULT_FIELDNAME)) && defaultValues.iterator().hasNext()) {
+                return new PrefixAnalyzer.PrefixTokenFilter(stream, ContextMapping.SEPARATOR, defaultValues);
             } else {
                 IndexableField[] fields = doc.getFields(fieldname);
-                ArrayList<CharSequence> values = new ArrayList<CharSequence>(fields.length);
-    
+                ArrayList<CharSequence> values = new ArrayList<>(fields.length);
                 for (int i = 0; i < fields.length; i++) {
                     values.add(fields[i].stringValue());
                 }
-    
+
                 return new PrefixAnalyzer.PrefixTokenFilter(stream, ContextMapping.SEPARATOR, values);
             }
         }
@@ -243,12 +255,11 @@ public class CategoryContextMapping extends ContextMapping {
         @Override
         public String toString() {
             StringBuilder sb = new StringBuilder("FieldConfig(" + fieldname + " = [");
-            Iterator<? extends CharSequence> value = this.defaultValues.iterator();
-            if (value.hasNext()) {
-                sb.append(value.next());
-                while (value.hasNext()) {
-                    sb.append(", ").append(value.next());
-                }
+            if (this.values != null && this.values.iterator().hasNext()) {
+                sb.append("(").append(Joiner.on(", ").join(this.values.iterator())).append(")");
+            }
+            if (this.defaultValues != null && this.defaultValues.iterator().hasNext()) {
+                sb.append(" default(").append(Joiner.on(", ").join(this.defaultValues.iterator())).append(")");
             }
             return sb.append("])").toString();
         }
@@ -265,7 +276,7 @@ public class CategoryContextMapping extends ContextMapping {
         }
 
         public Automaton toAutomaton() {
-            List<Automaton> automatons = new ArrayList<Automaton>();
+            List<Automaton> automatons = new ArrayList<>();
             for (CharSequence value : values) {
                 automatons.add(BasicAutomata.makeString(value.toString()));
             }
@@ -286,7 +297,7 @@ public class CategoryContextMapping extends ContextMapping {
     public static class Builder extends ContextBuilder<CategoryContextMapping> {
 
         private String fieldname;
-        private List<CharSequence> defaultValues = new ArrayList<CharSequence>();
+        private List<CharSequence> defaultValues = new ArrayList<>();
 
         public Builder(String name) {
             this(name, DEFAULT_FIELDNAME);

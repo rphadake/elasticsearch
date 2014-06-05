@@ -38,10 +38,10 @@ import java.util.List;
  *
  */
 public class SignificantStringTerms extends InternalSignificantTerms {
-    
+
     public static final InternalAggregation.Type TYPE = new Type("significant_terms", "sigsterms");
 
-    public static AggregationStreams.Stream STREAM = new AggregationStreams.Stream() {
+    public static final AggregationStreams.Stream STREAM = new AggregationStreams.Stream() {
         @Override
         public SignificantStringTerms readResult(StreamInput in) throws IOException {
             SignificantStringTerms buckets = new SignificantStringTerms();
@@ -54,17 +54,15 @@ public class SignificantStringTerms extends InternalSignificantTerms {
         AggregationStreams.registerStream(STREAM, TYPE.stream());
     }
 
-
     public static class Bucket extends InternalSignificantTerms.Bucket {
 
         BytesRef termBytes;
-     
 
-        public Bucket(BytesRef term, long subsetDf, long subsetSize, long supersetDf, long supersetSize,InternalAggregations aggregations) {
-            super(subsetDf, subsetSize,supersetDf,supersetSize,aggregations);
+
+        public Bucket(BytesRef term, long subsetDf, long subsetSize, long supersetDf, long supersetSize, InternalAggregations aggregations) {
+            super(subsetDf, subsetSize, supersetDf, supersetSize, aggregations);
             this.termBytes = term;
         }
-        
 
         @Override
         public Text getKeyAsText() {
@@ -82,7 +80,6 @@ public class SignificantStringTerms extends InternalSignificantTerms {
             return BytesRef.getUTF8SortedAsUnicodeComparator().compare(termBytes, ((Bucket) other).termBytes);
         }
 
-
         @Override
         public String getKey() {
             return termBytes.utf8ToString();
@@ -92,8 +89,9 @@ public class SignificantStringTerms extends InternalSignificantTerms {
 
     SignificantStringTerms() {} // for serialization
 
-    public SignificantStringTerms(long subsetSize, long supersetSize,String name, int requiredSize, long minDocCount, Collection<InternalSignificantTerms.Bucket> buckets) {
-        super(subsetSize, supersetSize, name,  requiredSize, minDocCount, buckets);
+    public SignificantStringTerms(long subsetSize, long supersetSize, String name, int requiredSize,
+            long minDocCount, Collection<InternalSignificantTerms.Bucket> buckets) {
+        super(subsetSize, supersetSize, name, requiredSize, minDocCount, buckets);
     }
 
     @Override
@@ -109,13 +107,12 @@ public class SignificantStringTerms extends InternalSignificantTerms {
         this.subsetSize = in.readVLong();
         this.supersetSize = in.readVLong();
         int size = in.readVInt();
-        List<InternalSignificantTerms.Bucket> buckets = new ArrayList<InternalSignificantTerms.Bucket>(size);
+        List<InternalSignificantTerms.Bucket> buckets = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
             BytesRef term = in.readBytesRef();
-            long subsetDf= in.readVLong();
-            long supersetDf= in.readVLong();
-            buckets.add(new Bucket(term,subsetDf, subsetSize, supersetDf,
-                    supersetSize, InternalAggregations.readAggregations(in)));
+            long subsetDf = in.readVLong();
+            long supersetDf = in.readVLong();
+            buckets.add(new Bucket(term, subsetDf, subsetSize, supersetDf, supersetSize, InternalAggregations.readAggregations(in)));
         }
         this.buckets = buckets;
         this.bucketMap = null;
@@ -145,9 +142,9 @@ public class SignificantStringTerms extends InternalSignificantTerms {
         for (InternalSignificantTerms.Bucket bucket : buckets) {
             //There is a condition (presumably when only one shard has a bucket?) where reduce is not called
             // and I end up with buckets that contravene the user's min_doc_count criteria in my reducer
-            if(bucket.subsetDf>=minDocCount){
+            if (bucket.subsetDf >= minDocCount) {
                 builder.startObject();
-                builder.field(CommonFields.KEY, ((Bucket) bucket).termBytes);
+                builder.utf8Field(CommonFields.KEY, ((Bucket) bucket).termBytes);
                 builder.field(CommonFields.DOC_COUNT, bucket.getDocCount());
                 builder.field("score", bucket.score);
                 builder.field("bg_count", bucket.supersetDf);

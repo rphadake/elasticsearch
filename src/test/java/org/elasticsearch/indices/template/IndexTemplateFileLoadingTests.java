@@ -27,17 +27,17 @@ import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.ElasticsearchIntegrationTest.ClusterScope;
-import org.elasticsearch.test.ElasticsearchIntegrationTest.Scope;
 import org.junit.Test;
 
 import java.io.File;
 import java.util.HashSet;
 import java.util.Set;
 
+import static org.elasticsearch.test.ElasticsearchIntegrationTest.*;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 
-@ClusterScope(scope=Scope.TEST, numNodes=1)
+@ClusterScope(scope= Scope.TEST, numDataNodes =1)
 public class IndexTemplateFileLoadingTests extends ElasticsearchIntegrationTest {
 
     @Override
@@ -80,7 +80,7 @@ public class IndexTemplateFileLoadingTests extends ElasticsearchIntegrationTest 
     @Test
     public void testThatLoadingTemplateFromFileWorks() throws Exception {
         final int iters = scaledRandomIntBetween(5, 20);
-        Set<String> indices = new HashSet<String>();
+        Set<String> indices = new HashSet<>();
         for (int i = 0; i < iters; i++) {
             String indexName = "foo" + randomRealisticUnicodeOfLengthBetween(0, 5);
             if (indices.contains(indexName)) {

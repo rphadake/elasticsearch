@@ -23,7 +23,6 @@ import com.google.common.base.Preconditions;
 import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.RamUsageEstimator;
-import org.elasticsearch.cache.recycler.PageCacheRecycler;
 
 import java.util.Arrays;
 
@@ -38,15 +37,15 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
     private byte[][] pages;
 
     /** Constructor. */
-    public BigByteArray(long size, PageCacheRecycler recycler, boolean clearOnResize) {
-        super(BYTE_PAGE_SIZE, recycler, clearOnResize);
+    public BigByteArray(long size, BigArrays bigArrays, boolean clearOnResize) {
+        super(BYTE_PAGE_SIZE, bigArrays, clearOnResize);
         this.size = size;
         pages = new byte[numPages(size)][];
         for (int i = 0; i < pages.length; ++i) {
             pages[i] = newBytePage(i);
         }
     }
-
+    
     @Override
     public byte get(long index) {
         final int pageIndex = pageIndex(index);
@@ -65,7 +64,7 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
     }
 
     @Override
-    public void get(long index, int len, BytesRef ref) {
+    public boolean get(long index, int len, BytesRef ref) {
         assert index + len <= size();
         int pageIndex = pageIndex(index);
         final int indexInPage = indexInPage(index);
@@ -73,6 +72,7 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
             ref.bytes = pages[pageIndex];
             ref.offset = indexInPage;
             ref.length = len;
+            return false;
         } else {
             ref.bytes = new byte[len];
             ref.offset = 0;
@@ -84,6 +84,7 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
                 System.arraycopy(pages[pageIndex], 0, ref.bytes, ref.length, copyLength);
                 ref.length += copyLength;
             } while (ref.length < len);
+            return true;
         }
     }
 

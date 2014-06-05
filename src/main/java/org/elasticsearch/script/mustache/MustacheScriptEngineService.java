@@ -18,7 +18,6 @@
  */
 package org.elasticsearch.script.mustache;
 
-import com.github.mustachejava.DefaultMustacheFactory;
 import com.github.mustachejava.Mustache;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.component.AbstractComponent;
@@ -34,6 +33,7 @@ import org.elasticsearch.search.lookup.SearchLookup;
 
 import java.io.IOException;
 import java.lang.ref.SoftReference;
+import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -47,7 +47,7 @@ import java.util.Map;
 public class MustacheScriptEngineService extends AbstractComponent implements ScriptEngineService {
 
     /** Thread local UTF8StreamWriter to store template execution results in, thread local to save object creation.*/
-    private static ThreadLocal<SoftReference<UTF8StreamWriter>> utf8StreamWriter = new ThreadLocal<SoftReference<UTF8StreamWriter>>();
+    private static ThreadLocal<SoftReference<UTF8StreamWriter>> utf8StreamWriter = new ThreadLocal<>();
 
     /** If exists, reset and return, otherwise create, reset and return a writer.*/
     private static UTF8StreamWriter utf8StreamWriter() {
@@ -55,7 +55,7 @@ public class MustacheScriptEngineService extends AbstractComponent implements Sc
         UTF8StreamWriter writer = (ref == null) ? null : ref.get();
         if (writer == null) {
             writer = new UTF8StreamWriter(1024 * 4);
-            utf8StreamWriter.set(new SoftReference<UTF8StreamWriter>(writer));
+            utf8StreamWriter.set(new SoftReference<>(writer));
         }
         writer.reset();
         return writer;
@@ -79,7 +79,7 @@ public class MustacheScriptEngineService extends AbstractComponent implements Sc
      * */
     public Object compile(String template) {
         /** Factory to generate Mustache objects from. */
-        return (new DefaultMustacheFactory()).compile(new FastStringReader(template), "query-template");
+        return (new JsonEscapingMustacheFactory()).compile(new FastStringReader(template), "query-template");
     }
 
     /**
@@ -122,6 +122,11 @@ public class MustacheScriptEngineService extends AbstractComponent implements Sc
     }
 
     @Override
+    public boolean sandboxed() {
+        return true;
+    }
+
+    @Override
     public ExecutableScript executable(Object mustache,
             @Nullable Map<String, Object> vars) {
         return new MustacheExecutableScript((Mustache) mustache, vars);
@@ -159,7 +164,7 @@ public class MustacheScriptEngineService extends AbstractComponent implements Sc
         public MustacheExecutableScript(Mustache mustache,
                 Map<String, Object> vars) {
             this.mustache = mustache;
-            this.vars = vars;
+            this.vars = vars == null ? Collections.EMPTY_MAP : vars;
         }
 
         @Override

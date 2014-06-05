@@ -36,8 +36,6 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class StartRecoveryRequest extends TransportRequest {
 
-    private static final AtomicLong recoveryIdGenerator = new AtomicLong();
-
     private long recoveryId;
 
     private ShardId shardId;
@@ -49,6 +47,8 @@ public class StartRecoveryRequest extends TransportRequest {
     private boolean markAsRelocated;
 
     private Map<String, StoreFileMetaData> existingFiles;
+
+    private RecoveryState.Type recoveryType;
 
     StartRecoveryRequest() {
     }
@@ -62,13 +62,15 @@ public class StartRecoveryRequest extends TransportRequest {
      * @param markAsRelocated
      * @param existingFiles
      */
-    public StartRecoveryRequest(ShardId shardId, DiscoveryNode sourceNode, DiscoveryNode targetNode, boolean markAsRelocated, Map<String, StoreFileMetaData> existingFiles) {
-        this.recoveryId = recoveryIdGenerator.incrementAndGet();
+    public StartRecoveryRequest(ShardId shardId, DiscoveryNode sourceNode, DiscoveryNode targetNode, boolean markAsRelocated, Map<String,
+                                StoreFileMetaData> existingFiles, RecoveryState.Type recoveryType, long recoveryId) {
+        this.recoveryId = recoveryId;
         this.shardId = shardId;
         this.sourceNode = sourceNode;
         this.targetNode = targetNode;
         this.markAsRelocated = markAsRelocated;
         this.existingFiles = existingFiles;
+        this.recoveryType = recoveryType;
     }
 
     public long recoveryId() {
@@ -93,6 +95,10 @@ public class StartRecoveryRequest extends TransportRequest {
 
     public Map<String, StoreFileMetaData> existingFiles() {
         return existingFiles;
+    }
+
+    public RecoveryState.Type recoveryType() {
+        return recoveryType;
     }
 
     @Override

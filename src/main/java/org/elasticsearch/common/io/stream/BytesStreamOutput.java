@@ -19,9 +19,8 @@
 
 package org.elasticsearch.common.io.stream;
 
-import org.apache.lucene.util.BytesRef;
-import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
+import org.elasticsearch.common.bytes.PagedBytesReference;
 import org.elasticsearch.common.io.BytesStream;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.ByteArray;
@@ -34,37 +33,31 @@ import java.io.IOException;
  */
 public class BytesStreamOutput extends StreamOutput implements BytesStream {
 
-    /**
-     * Factory/manager for our ByteArray
-     */
-    private final BigArrays bigarrays;
+    protected final BigArrays bigarrays;
+
+    protected ByteArray bytes;
+    protected int count;
 
     /**
-     * The internal list of pages.
-     */
-    private ByteArray bytes;
-
-    /**
-     * The number of valid bytes in the buffer.
-     */
-    private int count;
-
-    /**
-     * Create a nonrecycling {@link BytesStreamOutput} with 1 initial page acquired.
+     * Create a non recycling {@link BytesStreamOutput} with 1 initial page acquired.
      */
     public BytesStreamOutput() {
         this(BigArrays.PAGE_SIZE_IN_BYTES);
     }
 
     /**
-     * Create a nonrecycling {@link BytesStreamOutput} with enough initial pages acquired
-     * to satisfy the capacity given by {@link expectedSize}.
+     * Create a non recycling {@link BytesStreamOutput} with enough initial pages acquired
+     * to satisfy the capacity given by expected size.
      * 
      * @param expectedSize the expected maximum size of the stream in bytes.
      */
     public BytesStreamOutput(int expectedSize) {
-        bigarrays = BigArrays.NON_RECYCLING_INSTANCE;
-        bytes = bigarrays.newByteArray(expectedSize);
+        this(expectedSize, BigArrays.NON_RECYCLING_INSTANCE);
+    }
+
+    protected BytesStreamOutput(int expectedSize, BigArrays bigarrays) {
+        this.bigarrays = bigarrays;
+        this.bytes = bigarrays.newByteArray(expectedSize);
     }
 
     @Override
@@ -154,9 +147,7 @@ public class BytesStreamOutput extends StreamOutput implements BytesStream {
 
     @Override
     public BytesReference bytes() {
-        BytesRef bref = new BytesRef();
-        bytes.get(0, count, bref);
-        return new BytesArray(bref, false);
+        return new PagedBytesReference(bigarrays, bytes, count);
     }
 
     private void ensureCapacity(int offset) {

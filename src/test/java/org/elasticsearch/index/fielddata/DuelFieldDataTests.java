@@ -18,6 +18,8 @@
  */
 package org.elasticsearch.index.fielddata;
 
+import com.carrotsearch.randomizedtesting.generators.RandomPicks;
+import com.carrotsearch.randomizedtesting.generators.RandomStrings;
 import com.google.common.collect.Lists;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
@@ -36,6 +38,8 @@ import org.elasticsearch.common.unit.DistanceUnit;
 import org.elasticsearch.common.unit.DistanceUnit.Distance;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.index.fielddata.ordinals.Ordinals;
+import org.elasticsearch.index.fielddata.ordinals.Ordinals.Docs;
 import org.elasticsearch.index.mapper.DocumentMapper;
 import org.elasticsearch.index.mapper.MapperTestUtils;
 import org.elasticsearch.index.mapper.ParsedDocument;
@@ -87,7 +91,7 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
             }
         }
         AtomicReaderContext context = refreshReader();
-        Map<FieldDataType, Type> typeMap = new HashMap<FieldDataType, DuelFieldDataTests.Type>();
+        Map<FieldDataType, Type> typeMap = new HashMap<>();
         typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "fst")), Type.Bytes);
         typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "paged_bytes")), Type.Bytes);
         typeMap.put(new FieldDataType("byte", ImmutableSettings.builder().put("format", "array")), Type.Integer);
@@ -105,7 +109,7 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
         if (LuceneTestCase.defaultCodecSupportsSortedSet()) {
             typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "doc_values")), Type.Bytes);
         }
-        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<Entry<FieldDataType, Type>>(typeMap.entrySet());
+        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<>(typeMap.entrySet());
         Preprocessor pre = new ToDoublePreprocessor();
         while (!list.isEmpty()) {
             Entry<FieldDataType, Type> left;
@@ -177,7 +181,7 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
             }
         }
         AtomicReaderContext context = refreshReader();
-        Map<FieldDataType, Type> typeMap = new HashMap<FieldDataType, Type>();
+        Map<FieldDataType, Type> typeMap = new HashMap<>();
         typeMap.put(new FieldDataType("byte", ImmutableSettings.builder().put("format", "array")), Type.Integer);
         typeMap.put(new FieldDataType("short", ImmutableSettings.builder().put("format", "array")), Type.Integer);
         typeMap.put(new FieldDataType("int", ImmutableSettings.builder().put("format", "array")), Type.Integer);
@@ -186,7 +190,7 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
         typeMap.put(new FieldDataType("short", ImmutableSettings.builder().put("format", "doc_values")), Type.Integer);
         typeMap.put(new FieldDataType("int", ImmutableSettings.builder().put("format", "doc_values")), Type.Integer);
         typeMap.put(new FieldDataType("long", ImmutableSettings.builder().put("format", "doc_values")), Type.Long);
-        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<Entry<FieldDataType, Type>>(typeMap.entrySet());
+        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<>(typeMap.entrySet());
         while (!list.isEmpty()) {
             Entry<FieldDataType, Type> left;
             Entry<FieldDataType, Type> right;
@@ -256,12 +260,12 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
             }
         }
         AtomicReaderContext context = refreshReader();
-        Map<FieldDataType, Type> typeMap = new HashMap<FieldDataType, Type>();
+        Map<FieldDataType, Type> typeMap = new HashMap<>();
         typeMap.put(new FieldDataType("double", ImmutableSettings.builder().put("format", "array")), Type.Double);
         typeMap.put(new FieldDataType("float", ImmutableSettings.builder().put("format", "array")), Type.Float);
         typeMap.put(new FieldDataType("double", ImmutableSettings.builder().put("format", "doc_values")), Type.Double);
         typeMap.put(new FieldDataType("float", ImmutableSettings.builder().put("format", "doc_values")), Type.Float);
-        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<Entry<FieldDataType, Type>>(typeMap.entrySet());
+        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<>(typeMap.entrySet());
         while (!list.isEmpty()) {
             Entry<FieldDataType, Type> left;
             Entry<FieldDataType, Type> right;
@@ -322,14 +326,14 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
             }
         }
         AtomicReaderContext context = refreshReader();
-        Map<FieldDataType, Type> typeMap = new HashMap<FieldDataType, DuelFieldDataTests.Type>();
+        Map<FieldDataType, Type> typeMap = new HashMap<>();
         typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "fst")), Type.Bytes);
         typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "paged_bytes")), Type.Bytes);
         if (LuceneTestCase.defaultCodecSupportsSortedSet()) {
             typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "doc_values")), Type.Bytes);
         }
         // TODO add filters
-        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<Entry<FieldDataType, Type>>(typeMap.entrySet());
+        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<>(typeMap.entrySet());
         Preprocessor pre = new Preprocessor();
         while (!list.isEmpty()) {
             Entry<FieldDataType, Type> left;
@@ -360,6 +364,53 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
             perSegment.close();
         }
 
+    }
+
+    public void testDuelGlobalOrdinals() throws Exception {
+        Random random = getRandom();
+        final int numDocs = scaledRandomIntBetween(10, 1000);
+        final int numValues = scaledRandomIntBetween(10, 500);
+        final String[] values = new String[numValues];
+        for (int i = 0; i < numValues; ++i) {
+            values[i] = new String(RandomStrings.randomAsciiOfLength(random, 10));
+        }
+        for (int i = 0; i < numDocs; i++) {
+            Document d = new Document();
+            final int numVals = randomInt(3);
+            for (int j = 0; j < numVals; ++j) {
+                final String value = RandomPicks.randomFrom(random, Arrays.asList(values));
+                d.add(new StringField("string", value, Field.Store.NO));
+                if (LuceneTestCase.defaultCodecSupportsSortedSet()) {
+                    d.add(new SortedSetDocValuesField("bytes", new BytesRef(value)));
+                }
+            }
+            writer.addDocument(d);
+            if (randomInt(10) == 0) {
+                refreshReader();
+            }
+        }
+        refreshReader();
+
+        Map<FieldDataType, Type> typeMap = new HashMap<FieldDataType, DuelFieldDataTests.Type>();
+        typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "fst")), Type.Bytes);
+        typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "paged_bytes")), Type.Bytes);
+        if (LuceneTestCase.defaultCodecSupportsSortedSet()) {
+            typeMap.put(new FieldDataType("string", ImmutableSettings.builder().put("format", "doc_values")), Type.Bytes);
+        }
+
+        for (Map.Entry<FieldDataType, Type> entry : typeMap.entrySet()) {
+            ifdService.clear();
+            IndexFieldData.WithOrdinals<?> fieldData = getForField(entry.getKey(), entry.getValue().name().toLowerCase(Locale.ROOT));
+            BytesValues.WithOrdinals left = fieldData.load(readerContext).getBytesValues(randomBoolean());
+            fieldData.clear();
+            BytesValues.WithOrdinals right = fieldData.loadGlobal(topLevelReader).load(topLevelReader.leaves().get(0)).getBytesValues(randomBoolean());
+            Docs leftOrds = left.ordinals();
+            Docs rightOrds = right.ordinals();
+            assertEquals(leftOrds.getMaxOrd(), rightOrds.getMaxOrd());
+            for (long ord = Ordinals.MIN_ORDINAL; ord < leftOrds.getMaxOrd(); ++ord) {
+                assertEquals(left.getValueByOrd(ord), right.getValueByOrd(ord));
+            }
+        }
     }
 
     public void testDuelGeoPoints() throws Exception {
@@ -395,13 +446,13 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
             }
         }
         AtomicReaderContext context = refreshReader();
-        Map<FieldDataType, Type> typeMap = new HashMap<FieldDataType, DuelFieldDataTests.Type>();
+        Map<FieldDataType, Type> typeMap = new HashMap<>();
         final Distance precision = new Distance(1, randomFrom(DistanceUnit.values()));
         typeMap.put(new FieldDataType("geo_point", ImmutableSettings.builder().put("format", "array")), Type.GeoPoint);
         typeMap.put(new FieldDataType("geo_point", ImmutableSettings.builder().put("format", "compressed").put("precision", precision)), Type.GeoPoint);
         typeMap.put(new FieldDataType("geo_point", ImmutableSettings.builder().put("format", "doc_values")), Type.GeoPoint);
 
-        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<Entry<FieldDataType, Type>>(typeMap.entrySet());
+        ArrayList<Entry<FieldDataType, Type>> list = new ArrayList<>(typeMap.entrySet());
         while (!list.isEmpty()) {
             Entry<FieldDataType, Type> left;
             Entry<FieldDataType, Type> right;
@@ -451,9 +502,8 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
     private static void duelFieldDataBytes(Random random, AtomicReaderContext context, IndexFieldData<?> left, IndexFieldData<?> right, Preprocessor pre) throws Exception {
         AtomicFieldData<?> leftData = random.nextBoolean() ? left.load(context) : left.loadDirect(context);
         AtomicFieldData<?> rightData = random.nextBoolean() ? right.load(context) : right.loadDirect(context);
-        assertThat(leftData.getNumDocs(), equalTo(rightData.getNumDocs()));
 
-        int numDocs = leftData.getNumDocs();
+        int numDocs = context.reader().maxDoc();
         BytesValues leftBytesValues = leftData.getBytesValues(random.nextBoolean());
         BytesValues rightBytesValues = rightData.getBytesValues(random.nextBoolean());
         BytesRef leftSpare = new BytesRef();
@@ -488,9 +538,7 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
         AtomicNumericFieldData leftData = random.nextBoolean() ? left.load(context) : left.loadDirect(context);
         AtomicNumericFieldData rightData = random.nextBoolean() ? right.load(context) : right.loadDirect(context);
 
-        assertThat(leftData.getNumDocs(), equalTo(rightData.getNumDocs()));
-
-        int numDocs = leftData.getNumDocs();
+        int numDocs = context.reader().maxDoc();
         DoubleValues leftDoubleValues = leftData.getDoubleValues();
         DoubleValues rightDoubleValues = rightData.getDoubleValues();
         for (int i = 0; i < numDocs; i++) {
@@ -516,9 +564,7 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
         AtomicNumericFieldData leftData = random.nextBoolean() ? left.load(context) : left.loadDirect(context);
         AtomicNumericFieldData rightData = random.nextBoolean() ? right.load(context) : right.loadDirect(context);
 
-        assertThat(leftData.getNumDocs(), equalTo(rightData.getNumDocs()));
-
-        int numDocs = leftData.getNumDocs();
+        int numDocs = context.reader().maxDoc();
         LongValues leftLongValues = leftData.getLongValues();
         LongValues rightLongValues = rightData.getLongValues();
         for (int i = 0; i < numDocs; i++) {
@@ -540,9 +586,7 @@ public class DuelFieldDataTests extends AbstractFieldDataTests {
         AtomicGeoPointFieldData<?> leftData = random.nextBoolean() ? left.load(context) : left.loadDirect(context);
         AtomicGeoPointFieldData<?> rightData = random.nextBoolean() ? right.load(context) : right.loadDirect(context);
 
-        assertThat(leftData.getNumDocs(), equalTo(rightData.getNumDocs()));
-
-        int numDocs = leftData.getNumDocs();
+        int numDocs = context.reader().maxDoc();
         GeoPointValues leftValues = leftData.getGeoPointValues();
         GeoPointValues rightValues = rightData.getGeoPointValues();
         for (int i = 0; i < numDocs; ++i) {

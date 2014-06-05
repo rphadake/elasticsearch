@@ -23,6 +23,7 @@ import com.google.common.base.Preconditions;
 import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
+import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.lease.Releasable;
@@ -36,17 +37,16 @@ import org.elasticsearch.index.fielddata.MurmurHash3Values;
 import org.elasticsearch.index.fielddata.ordinals.Ordinals;
 import org.elasticsearch.search.aggregations.Aggregator;
 import org.elasticsearch.search.aggregations.InternalAggregation;
-import org.elasticsearch.search.aggregations.metrics.MetricsAggregator;
+import org.elasticsearch.search.aggregations.metrics.NumericMetricsAggregator;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
 import org.elasticsearch.search.aggregations.support.ValuesSource;
-import org.elasticsearch.search.aggregations.support.numeric.NumericValuesSource;
 
 import java.io.IOException;
 
 /**
  * An aggregator that computes approximate counts of unique values.
  */
-public class CardinalityAggregator extends MetricsAggregator.SingleValue {
+public class CardinalityAggregator extends NumericMetricsAggregator.SingleValue {
 
     private final int precision;
     private final boolean rehash;
@@ -79,12 +79,12 @@ public class CardinalityAggregator extends MetricsAggregator.SingleValue {
         // requested not to hash the values (perhaps they already hashed the values themselves before indexing the doc)
         // so we can just work with the original value source as is
         if (!rehash) {
-            LongValues hashValues = ((NumericValuesSource) valuesSource).longValues();
+            LongValues hashValues = ((ValuesSource.Numeric) valuesSource).longValues();
             return new DirectCollector(counts, hashValues);
         }
 
-        if (valuesSource instanceof NumericValuesSource) {
-            NumericValuesSource source = (NumericValuesSource) valuesSource;
+        if (valuesSource instanceof ValuesSource.Numeric) {
+            ValuesSource.Numeric source = (ValuesSource.Numeric) valuesSource;
             LongValues hashValues = source.isFloatingPoint() ? MurmurHash3Values.wrap(source.doubleValues()) : MurmurHash3Values.wrap(source.longValues());
             return new DirectCollector(counts, hashValues);
         }
@@ -93,7 +93,10 @@ public class CardinalityAggregator extends MetricsAggregator.SingleValue {
         if (bytesValues instanceof BytesValues.WithOrdinals) {
             BytesValues.WithOrdinals values = (BytesValues.WithOrdinals) bytesValues;
             final long maxOrd = values.ordinals().getMaxOrd();
-            if (maxOrd <= reader.reader().maxDoc()) {
+            final long ordinalsMemoryUsage = OrdinalsCollector.memoryOverhead(maxOrd);
+            final long countsMemoryUsage = HyperLogLogPlusPlus.memoryUsage(precision);
+            // only use ordinals if they don't increase memory usage by more than 25%
+            if (ordinalsMemoryUsage < countsMemoryUsage / 4) {
                 return new OrdinalsCollector(counts, values, bigArrays);
             }
         }
@@ -116,7 +119,7 @@ public class CardinalityAggregator extends MetricsAggregator.SingleValue {
         if (collector != null) {
             try {
                 collector.postCollect();
-                collector.release();
+                collector.close();
             } finally {
                 collector = null;
             }
@@ -151,8 +154,8 @@ public class CardinalityAggregator extends MetricsAggregator.SingleValue {
     }
 
     @Override
-    protected void doRelease() {
-        Releasables.release(counts, collector);
+    protected void doClose() {
+        Releasables.close(counts, collector);
     }
 
     private static interface Collector extends Releasable {
@@ -187,13 +190,22 @@ public class CardinalityAggregator extends MetricsAggregator.SingleValue {
         }
 
         @Override
-        public boolean release() throws ElasticsearchException {
-            return true;
+        public void close() throws ElasticsearchException {
+            // no-op
         }
 
     }
 
     private static class OrdinalsCollector implements Collector {
+
+        private static final long SHALLOW_FIXEDBITSET_SIZE = RamUsageEstimator.shallowSizeOfInstance(FixedBitSet.class);
+
+        /**
+         * Return an approximate memory overhead per bucket for this collector.
+         */
+        public static long memoryOverhead(long maxOrd) {
+            return RamUsageEstimator.NUM_BYTES_OBJECT_REF + SHALLOW_FIXEDBITSET_SIZE + (maxOrd + 7) / 8; // 1 bit per ord
+        }
 
         private final BigArrays bigArrays;
         private final BytesValues.WithOrdinals values;
@@ -237,9 +249,7 @@ public class CardinalityAggregator extends MetricsAggregator.SingleValue {
             }
 
             final org.elasticsearch.common.hash.MurmurHash3.Hash128 hash = new org.elasticsearch.common.hash.MurmurHash3.Hash128();
-            final LongArray hashes = bigArrays.newLongArray(maxOrd, false);
-            boolean success = false;
-            try {
+            try (LongArray hashes = bigArrays.newLongArray(maxOrd, false)) {
                 for (int ord = allVisitedOrds.nextSetBit(0); ord != -1; ord = ord + 1 < maxOrd ? allVisitedOrds.nextSetBit(ord + 1) : -1) {
                     final BytesRef value = values.getValueByOrd(ord);
                     org.elasticsearch.common.hash.MurmurHash3.hash128(value.bytes, value.offset, value.length, 0, hash);
@@ -254,16 +264,12 @@ public class CardinalityAggregator extends MetricsAggregator.SingleValue {
                         }
                     }
                 }
-                success = true;
-            } finally {
-                Releasables.release(success, hashes);
             }
         }
 
         @Override
-        public boolean release() throws ElasticsearchException {
-            Releasables.release(visitedOrds);
-            return true;
+        public void close() throws ElasticsearchException {
+            Releasables.close(visitedOrds);
         }
 
     }

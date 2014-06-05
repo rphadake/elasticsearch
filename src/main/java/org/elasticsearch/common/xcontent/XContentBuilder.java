@@ -529,7 +529,7 @@ public final class XContentBuilder implements BytesStream {
         return this;
     }
 
-    public XContentBuilder field(XContentBuilderString name, BytesRef value) throws IOException {
+    public XContentBuilder utf8Field(XContentBuilderString name, BytesRef value) throws IOException {
         field(name);
         generator.writeUTF8String(value.bytes, value.offset, value.length);
         return this;
@@ -858,6 +858,14 @@ public final class XContentBuilder implements BytesStream {
         return this;
     }
 
+    public XContentBuilder dateValueField(XContentBuilderString rawFieldName, XContentBuilderString readableFieldName, long rawTimestamp) throws IOException {
+        if (humanReadable) {
+            field(readableFieldName, defaultDatePrinter.print(rawTimestamp));
+        }
+        field(rawFieldName, rawTimestamp);
+        return this;
+    }
+
     public XContentBuilder byteSizeField(XContentBuilderString rawFieldName, XContentBuilderString readableFieldName, ByteSizeValue byteSizeValue) throws IOException {
         if (humanReadable) {
             field(readableFieldName, byteSizeValue.toString());
@@ -1127,6 +1135,8 @@ public final class XContentBuilder implements BytesStream {
             generator.writeNumber(((Float) value).floatValue());
         } else if (type == Double.class) {
             generator.writeNumber(((Double) value).doubleValue());
+        } else if (type == Byte.class) {
+            generator.writeNumber(((Byte)value).byteValue());
         } else if (type == Short.class) {
             generator.writeNumber(((Short) value).shortValue());
         } else if (type == Boolean.class) {

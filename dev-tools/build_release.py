@@ -30,6 +30,8 @@ import socket
 import urllib.request
 
 from http.client import HTTPConnection
+from http.client import HTTPSConnection
+
 
 """ 
  This tool builds a release from the a given elasticsearch branch.
@@ -195,6 +197,19 @@ def update_reference_docs(release_version, path='docs'):
         pending_files.append(os.path.join(root, file_name))
   return pending_files
 
+# Checks all source files for //nocommit comments
+def check_nocommits(path='src'):
+  pattern = re.compile(r'\bnocommit\b')
+  for root, _, file_names in os.walk(path):
+    for file_name in fnmatch.filter(file_names, '*.java'):
+      full_path = os.path.join(root, file_name)
+      line_number = 0
+      with open(full_path, 'r', encoding='utf-8') as current_file:
+        for line in current_file:
+          line_number = line_number + 1
+          if pattern.search(line):
+            raise RuntimeError('Found nocommit in %s line %s' % (full_path, line_number))
+
 # Moves the pom.xml file from a snapshot to a release
 def remove_maven_snapshot(pom, release):
   pattern = '<version>%s-SNAPSHOT</version>' % (release)
@@ -222,6 +237,9 @@ def add_pending_files(*files):
 def commit_release(release):
   run('git commit -m "release [%s]"' % release)
 
+def commit_feature_flags(release):
+    run('git commit -m "Update Documentation Feature Flags [%s]"' % release)
+
 def tag_release(release):
   run('git tag -a v%s -m "Tag release version %s"' % (release, release))
 
@@ -237,7 +255,8 @@ def build_release(run_tests=False, dry_run=True, cpus=1):
     run_mvn('clean',
             'test -Dtests.jvms=%s -Des.node.mode=local' % (cpus),
             'test -Dtests.jvms=%s -Des.node.mode=network' % (cpus))
-  run_mvn('clean %s -DskipTests' %(target))
+  run_mvn('clean test-compile -Dforbidden.test.signatures="org.apache.lucene.util.LuceneTestCase\$AwaitsFix @ Please fix all bugs before release"')
+  run_mvn('clean %s -DskipTests' % (target))
   success = False
   try:
     run_mvn('-DskipTests rpm:rpm')
@@ -251,7 +270,32 @@ def build_release(run_tests=False, dry_run=True, cpus=1):
     $ apt-get install rpm # on Ubuntu et.al
   """)
 
-
+# Uses the github API to fetch open tickets for the given release version
+# if it finds any tickets open for that version it will throw an exception
+def ensure_no_open_tickets(version):
+  version = "v%s" % version
+  conn = HTTPSConnection('api.github.com')
+  try:
+    log('Checking for open tickets on Github for version %s' % version)
+    log('Check if node is available')
+    conn.request('GET', '/repos/elasticsearch/elasticsearch/issues?state=open&labels=%s' % version, headers= {'User-Agent' : 'Elasticsearch version checker'})
+    res = conn.getresponse()
+    if res.status == 200:
+      issues = json.loads(res.read().decode("utf-8"))
+      if issues:
+        urls = []
+        for issue in issues:
+          urls.append(issue['url'])
+        raise RuntimeError('Found open issues  for release version %s see - %s' % (version, urls))
+      else:
+        log("No open issues found for version %s" % version)
+    else:
+      raise RuntimeError('Failed to fetch issue list from Github for release version %s' % version)
+  except socket.error as e:
+    log("Failed to fetch issue list from Github for release version %s' % version - Exception: [%s]" % (version, e))
+    #that is ok it might not be there yet
+  finally:
+    conn.close()
 
 def wait_for_node_startup(host='127.0.0.1', port=9200,timeout=15):
   for _ in range(timeout):
@@ -360,7 +404,7 @@ def smoke_test_release(release, files, expected_hash, plugins):
     plugin_names = {}
     for name, plugin  in plugins:
       print('  Install plugin [%s] from [%s]' % (name, plugin))
-      run('%s %s %s' % (es_plugin_path, '-install', plugin))
+      run('%s; %s %s %s' % (java_exe(), es_plugin_path, '-install', plugin))
       plugin_names[name] = True
 
     if release.startswith("0.90."):
@@ -368,7 +412,7 @@ def smoke_test_release(release, files, expected_hash, plugins):
     else:
       background = '-d'
     print('  Starting elasticsearch deamon from [%s]' % os.path.join(tmp_dir, 'elasticsearch-%s' % release))
-    run('%s; %s -Des.node.name=smoke_tester -Des.cluster.name=prepare_release -Des.discovery.zen.ping.multicast.enabled=false %s'
+    run('%s; %s -Des.node.name=smoke_tester -Des.cluster.name=prepare_release -Des.discovery.zen.ping.multicast.enabled=false -Des.node.bench=true -Des.script.disable_dynamic=false %s'
          % (java_exe(), es_run_path, background))
     conn = HTTPConnection('127.0.0.1', 9200, 20);
     wait_for_node_startup()
@@ -385,7 +429,7 @@ def smoke_test_release(release, files, expected_hash, plugins):
           if version['build_hash'].strip() !=  expected_hash:
             raise RuntimeError('HEAD hash does not match expected [%s] but got [%s]' % (expected_hash, version['build_hash']))
           print('  Running REST Spec tests against package [%s]' % release_file)
-          run_mvn('test -Dtests.rest=%s -Dtests.class=*.*RestTests' % ("127.0.0.1:9200"))
+          run_mvn('test -Dtests.cluster=%s -Dtests.class=*.*RestTests' % ("127.0.0.1:9300"))
           print('  Verify if plugins are listed in _nodes')
           conn.request('GET', '/_nodes?plugin=true&pretty=true')
           res = conn.getresponse()
@@ -510,9 +554,10 @@ if __name__ == '__main__':
   print('Preparing Release from branch [%s] running tests: [%s] dryrun: [%s]' % (src_branch, run_tests, dry_run))
   print('  JAVA_HOME is [%s]' % JAVA_HOME)
   print('  Running with maven command: [%s] ' % (MVN))
-
+  check_nocommits(path='src')
   if build:
     release_version = find_release_version(src_branch)
+    ensure_no_open_tickets(release_version)
     if not dry_run:
       smoke_test_version = release_version
     head_hash = get_head_hash()
@@ -525,10 +570,16 @@ if __name__ == '__main__':
       pending_files = [POM_FILE, VERSION_FILE]
       remove_maven_snapshot(POM_FILE, release_version)
       remove_version_snapshot(VERSION_FILE, release_version)
-      pending_files = pending_files + update_reference_docs(release_version)
       print('  Done removing snapshot version')
       add_pending_files(*pending_files) # expects var args use * to expand
       commit_release(release_version)
+      pending_files = update_reference_docs(release_version)
+      version_head_hash = None
+      # split commits for docs and version to enable easy cherry-picking
+      if pending_files:
+        add_pending_files(*pending_files) # expects var args use * to expand
+        commit_feature_flags(release_version)
+        version_head_hash = get_head_hash()
       print('  Committed release version [%s]' % release_version)
       print(''.join(['-' for _ in range(80)]))
       print('Building Release candidate')
@@ -548,6 +599,9 @@ if __name__ == '__main__':
       merge_tag_push(remote, src_branch, release_version, dry_run)
       print('  publish artifacts to S3 -- dry_run: %s' % dry_run)
       publish_artifacts(artifacts_and_checksum, dry_run=dry_run)
+      cherry_pick_command = '.'
+      if version_head_hash:
+        cherry_pick_command = ' and cherry-pick the documentation changes: \'git cherry-pick %s\' to the development branch' % (version_head_hash)
       pending_msg = """
       Release successful pending steps:
         * create a version tag on github for version 'v%(version)s'
@@ -558,8 +612,9 @@ if __name__ == '__main__':
         * announce the release on the website / blog post
         * tweet about the release
         * announce the release in the google group/mailinglist
+        * Move to a Snapshot version to the current branch for the next point release%(cherry_pick)s
       """
-      print(pending_msg % { 'version' : release_version} )
+      print(pending_msg % { 'version' : release_version, 'cherry_pick' : cherry_pick_command} )
       success = True
     finally:
       if not success:

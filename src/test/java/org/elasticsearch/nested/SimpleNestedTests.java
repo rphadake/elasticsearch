@@ -21,10 +21,11 @@ package org.elasticsearch.nested;
 
 import org.apache.lucene.search.Explanation;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus;
-import org.elasticsearch.action.admin.indices.status.IndicesStatusResponse;
+import org.elasticsearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.elasticsearch.action.delete.DeleteResponse;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.action.search.SearchPhaseExecutionException;
+import org.elasticsearch.action.search.SearchRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.common.xcontent.XContentBuilder;
@@ -97,9 +98,7 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
         assertThat(getResponse.getSourceAsBytes(), notNullValue());
 
         // check the numDocs
-        IndicesStatusResponse statusResponse = admin().indices().prepareStatus().get();
-        assertNoFailures(statusResponse);
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo(3l));
+        assertDocumentCount("test", 3);
 
         // check that _all is working on nested docs
         searchResponse = client().prepareSearch("test").setQuery(termQuery("_all", "n_value1_1")).execute().actionGet();
@@ -140,8 +139,7 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
         waitForRelocation(ClusterHealthStatus.GREEN);
         // flush, so we fetch it from the index (as see that we filter nested docs)
         flush();
-        statusResponse = client().admin().indices().prepareStatus().get();
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo(6l));
+        assertDocumentCount("test", 6);
 
         searchResponse = client().prepareSearch("test").setQuery(nestedQuery("nested1",
                 boolQuery().must(termQuery("nested1.n_field1", "n_value1_1")).must(termQuery("nested1.n_field2", "n_value2_1")))).execute().actionGet();
@@ -166,8 +164,7 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
 
         // flush, so we fetch it from the index (as see that we filter nested docs)
         flush();
-        statusResponse = client().admin().indices().prepareStatus().execute().actionGet();
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo(3l));
+        assertDocumentCount("test", 3);
 
         searchResponse = client().prepareSearch("test").setQuery(nestedQuery("nested1", termQuery("nested1.n_field1", "n_value1_1"))).execute().actionGet();
         assertNoFailures(searchResponse);
@@ -219,14 +216,12 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
 
 
         flush();
-        IndicesStatusResponse statusResponse = client().admin().indices().prepareStatus().execute().actionGet();
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo(total * 3l));
+        assertDocumentCount("test", total * 3);
 
         client().prepareDeleteByQuery("test").setQuery(QueryBuilders.idsQuery("type1").ids(Integer.toString(docToDelete))).execute().actionGet();
         flush();
         refresh();
-        statusResponse = client().admin().indices().prepareStatus().execute().actionGet();
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo((total * 3l) - 3));
+        assertDocumentCount("test", (total * 3l) - 3);
 
         for (int i = 0; i < total; i++) {
             assertThat(client().prepareGet("test", "type1", Integer.toString(i)).execute().actionGet().isExists(), equalTo(i != docToDelete));
@@ -271,14 +266,12 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
         flush();
         refresh();
 
-        IndicesStatusResponse statusResponse = client().admin().indices().prepareStatus().execute().actionGet();
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo(total));
+        assertDocumentCount("test", total);
 
         client().prepareDeleteByQuery("test").setQuery(QueryBuilders.idsQuery("type1").ids(Integer.toString(docToDelete))).execute().actionGet();
         flush();
         refresh();
-        statusResponse = client().admin().indices().prepareStatus().execute().actionGet();
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo((total) - 1));
+        assertDocumentCount("test", total-1);
 
         for (int i = 0; i < total; i++) {
             assertThat(client().prepareGet("test", "type1", Integer.toString(i)).execute().actionGet().isExists(), equalTo(i != docToDelete));
@@ -311,8 +304,7 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
         assertThat(getResponse.isExists(), equalTo(true));
         waitForRelocation(ClusterHealthStatus.GREEN);
         // check the numDocs
-        IndicesStatusResponse statusResponse = client().admin().indices().prepareStatus().execute().actionGet();
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo(7l));
+        assertDocumentCount("test", 7);
 
         // do some multi nested queries
         SearchResponse searchResponse = client().prepareSearch("test").setQuery(nestedQuery("nested1",
@@ -375,7 +367,12 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
                 .addMapping("type1", jsonBuilder().startObject().startObject("type1").startObject("properties")
                         .startObject("nested1")
                         .field("type", "nested").startObject("properties")
-                        .startObject("nested2").field("type", "nested").endObject()
+                        .startObject("nested2").field("type", "nested")
+                        .startObject("properties")
+                        .startObject("field2_1").field("type", "string").endObject()
+                        .startObject("field2_2").field("type", "long").endObject()
+                        .endObject()
+                        .endObject()
                         .endObject().endObject()
                         .endObject().endObject().endObject()));
 
@@ -536,17 +533,15 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
 
         flush();
         refresh();
-        IndicesStatusResponse statusResponse = client().admin().indices().prepareStatus().execute().actionGet();
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo(6l));
+        assertDocumentCount("test", 6);
 
         client().prepareDeleteByQuery("alias1").setQuery(QueryBuilders.matchAllQuery()).execute().actionGet();
         flush();
         refresh();
-        statusResponse = client().admin().indices().prepareStatus().execute().actionGet();
 
         // This must be 3, otherwise child docs aren't deleted.
         // If this is 5 then only the parent has been removed
-        assertThat(statusResponse.getIndex("test").getDocs().getNumDocs(), equalTo(3l));
+        assertDocumentCount("test", 3);
         assertThat(client().prepareGet("test", "type1", "1").execute().actionGet().isExists(), equalTo(false));
     }
 
@@ -595,21 +590,21 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
 
     @Test
     public void testSimpleNestedSorting() throws Exception {
-                assertAcked(prepareCreate("test")
-                        .setSettings(settingsBuilder()
-                                .put(indexSettings())
-                                .put("index.refresh_interval", -1))
-                        .addMapping("type1", jsonBuilder().startObject().startObject("type1").startObject("properties")
-                                .startObject("nested1")
-                                .field("type", "nested")
-                                .startObject("properties")
-                                .startObject("field1")
-                                .field("type", "long")
-                                .field("store", "yes")
-                                .endObject()
-                                .endObject()
-                                .endObject()
-                                .endObject().endObject().endObject()));
+        assertAcked(prepareCreate("test")
+                .setSettings(settingsBuilder()
+                        .put(indexSettings())
+                        .put("index.refresh_interval", -1))
+                .addMapping("type1", jsonBuilder().startObject().startObject("type1").startObject("properties")
+                        .startObject("nested1")
+                        .field("type", "nested")
+                        .startObject("properties")
+                        .startObject("field1")
+                        .field("type", "long")
+                        .field("store", "yes")
+                        .endObject()
+                        .endObject()
+                        .endObject()
+                        .endObject().endObject().endObject()));
         ensureGreen();
 
         client().prepareIndex("test", "type1", "1").setSource(jsonBuilder().startObject()
@@ -765,15 +760,23 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
 
     @Test
     public void testSimpleNestedSorting_withNestedFilterMissing() throws Exception {
-                assertAcked(prepareCreate("test")
-                        .setSettings(settingsBuilder()
-                                .put(indexSettings())
-                                .put("index.referesh_interval", -1))
-                        .addMapping("type1", jsonBuilder().startObject().startObject("type1").startObject("properties")
-                                .startObject("nested1")
-                                .field("type", "nested")
+        assertAcked(prepareCreate("test")
+                .setSettings(settingsBuilder()
+                        .put(indexSettings())
+                        .put("index.referesh_interval", -1))
+                .addMapping("type1", jsonBuilder().startObject().startObject("type1").startObject("properties")
+                        .startObject("nested1")
+                        .field("type", "nested")
+                            .startObject("properties")
+                                .startObject("field1")
+                                    .field("type", "long")
                                 .endObject()
-                                .endObject().endObject().endObject()));
+                                .startObject("field2")
+                                    .field("type", "boolean")
+                                .endObject()
+                            .endObject()
+                        .endObject()
+                        .endObject().endObject().endObject()));
         ensureGreen();
 
         client().prepareIndex("test", "type1", "1").setSource(jsonBuilder().startObject()
@@ -819,11 +822,15 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
                 .endObject()).execute().actionGet();
         refresh();
 
-        SearchResponse searchResponse = client().prepareSearch("test")
-                .setTypes("type1")
+        SearchRequestBuilder searchRequestBuilder = client().prepareSearch("test").setTypes("type1")
                 .setQuery(QueryBuilders.matchAllQuery())
-                .addSort(SortBuilders.fieldSort("nested1.field1").setNestedFilter(termFilter("nested1.field2", true)).missing(10).order(SortOrder.ASC))
-                .execute().actionGet();
+                .addSort(SortBuilders.fieldSort("nested1.field1").setNestedFilter(termFilter("nested1.field2", true)).missing(10).order(SortOrder.ASC));
+
+        if (randomBoolean()) {
+            searchRequestBuilder.setScroll("10m");
+        }
+
+        SearchResponse searchResponse = searchRequestBuilder.get();
 
         assertHitCount(searchResponse, 3);
         assertThat(searchResponse.getHits().hits()[0].id(), equalTo("2"));
@@ -833,11 +840,14 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
         assertThat(searchResponse.getHits().hits()[2].id(), equalTo("3"));
         assertThat(searchResponse.getHits().hits()[2].sortValues()[0].toString(), equalTo("10"));
 
-        searchResponse = client().prepareSearch("test")
-                .setTypes("type1")
-                .setQuery(QueryBuilders.matchAllQuery())
-                .addSort(SortBuilders.fieldSort("nested1.field1").setNestedFilter(termFilter("nested1.field2", true)).missing(10).order(SortOrder.DESC))
-                .execute().actionGet();
+        searchRequestBuilder = client().prepareSearch("test").setTypes("type1").setQuery(QueryBuilders.matchAllQuery())
+                .addSort(SortBuilders.fieldSort("nested1.field1").setNestedFilter(termFilter("nested1.field2", true)).missing(10).order(SortOrder.DESC));
+
+        if (randomBoolean()) {
+            searchRequestBuilder.setScroll("10m");
+        }
+
+        searchResponse = searchRequestBuilder.get();
 
         assertHitCount(searchResponse, 3);
         assertThat(searchResponse.getHits().hits()[0].id(), equalTo("3"));
@@ -846,28 +856,29 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
         assertThat(searchResponse.getHits().hits()[1].sortValues()[0].toString(), equalTo("5"));
         assertThat(searchResponse.getHits().hits()[2].id(), equalTo("2"));
         assertThat(searchResponse.getHits().hits()[2].sortValues()[0].toString(), equalTo("2"));
+        client().prepareClearScroll().addScrollId("_all").get();
     }
 
     @Test
     public void testSortNestedWithNestedFilter() throws Exception {
-                assertAcked(prepareCreate("test")
-                        .addMapping("type1", XContentFactory.jsonBuilder().startObject()
-                                .startObject("type1")
-                                .startObject("properties")
-                                .startObject("grand_parent_values").field("type", "long").endObject()
-                                .startObject("parent").field("type", "nested")
-                                .startObject("properties")
-                                .startObject("parent_values").field("type", "long").endObject()
-                                .startObject("child").field("type", "nested")
-                                .startObject("properties")
-                                .startObject("child_values").field("type", "long").endObject()
-                                .endObject()
-                                .endObject()
-                                .endObject()
-                                .endObject()
-                                .endObject()
-                                .endObject()
-                                .endObject()));
+        assertAcked(prepareCreate("test")
+                .addMapping("type1", XContentFactory.jsonBuilder().startObject()
+                        .startObject("type1")
+                        .startObject("properties")
+                        .startObject("grand_parent_values").field("type", "long").endObject()
+                        .startObject("parent").field("type", "nested")
+                        .startObject("properties")
+                        .startObject("parent_values").field("type", "long").endObject()
+                        .startObject("child").field("type", "nested")
+                        .startObject("properties")
+                        .startObject("child_values").field("type", "long").endObject()
+                        .endObject()
+                        .endObject()
+                        .endObject()
+                        .endObject()
+                        .endObject()
+                        .endObject()
+                        .endObject()));
         ensureGreen();
 
         // sum: 11
@@ -1202,5 +1213,15 @@ public class SimpleNestedTests extends ElasticsearchIntegrationTest {
         assertThat(searchResponse.getHits().getHits()[2].getId(), equalTo("3"));
         assertThat(searchResponse.getHits().getHits()[2].sortValues()[0].toString(), equalTo("3"));
     }
+
+    /**
+     */
+    private void assertDocumentCount(String index, long numdocs) {
+        IndicesStatsResponse stats = admin().indices().prepareStats(index).clear().setDocs(true).get();
+        assertNoFailures(stats);
+        assertThat(stats.getIndex(index).getPrimaries().docs.getCount(), is(numdocs));
+
+    }
+
 
 }

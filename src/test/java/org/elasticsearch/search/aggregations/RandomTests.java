@@ -20,12 +20,15 @@
 package org.elasticsearch.search.aggregations;
 
 import com.carrotsearch.hppc.IntOpenHashSet;
-import org.elasticsearch.action.bulk.BulkRequestBuilder;
-import org.elasticsearch.action.bulk.BulkResponse;
+import com.google.common.collect.Lists;
+import org.apache.lucene.util.LuceneTestCase.Slow;
+import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.action.search.SearchRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.support.IndicesOptions;
+import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.index.fielddata.ordinals.InternalGlobalOrdinalsBuilder;
 import org.elasticsearch.index.query.FilterBuilders;
 import org.elasticsearch.index.query.RangeFilterBuilder;
 import org.elasticsearch.search.aggregations.bucket.filter.Filter;
@@ -36,9 +39,11 @@ import org.elasticsearch.search.aggregations.bucket.terms.Terms;
 import org.elasticsearch.search.aggregations.bucket.terms.TermsAggregatorFactory;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 
+import java.util.List;
+
 import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.elasticsearch.search.aggregations.AggregationBuilders.*;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.*;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.core.IsNull.notNullValue;
 
@@ -46,12 +51,13 @@ import static org.hamcrest.core.IsNull.notNullValue;
  * Additional tests that aim at testing more complex aggregation trees on larger random datasets, so that things like
  * the growth of dynamic arrays is tested.
  */
+@Slow
 public class RandomTests extends ElasticsearchIntegrationTest {
 
     // Make sure that unordered, reversed, disjoint and/or overlapping ranges are supported
     // Duel with filters
     public void testRandomRanges() throws Exception {
-        final int numDocs = scaledRandomIntBetween(1000, 10000);
+        final int numDocs = scaledRandomIntBetween(500, 5000);
         final double[][] docs = new double[numDocs][];
         for (int i = 0; i < numDocs; ++i) {
             final int numValues = randomInt(5);
@@ -72,7 +78,7 @@ public class RandomTests extends ElasticsearchIntegrationTest {
             source = source.endArray().endObject();
             client().prepareIndex("idx", "type").setSource(source).execute().actionGet();
         }
-        assertNoFailures(client().admin().indices().prepareRefresh("idx").setIndicesOptions(IndicesOptions.lenient()).execute().get());
+        assertNoFailures(client().admin().indices().prepareRefresh("idx").setIndicesOptions(IndicesOptions.lenientExpandOpen()).execute().get());
 
         final int numRanges = randomIntBetween(1, 20);
         final double[][] ranges = new double[numRanges][];
@@ -141,27 +147,39 @@ public class RandomTests extends ElasticsearchIntegrationTest {
 
     // test long/double/string terms aggs with high number of buckets that require array growth
     public void testDuelTerms() throws Exception {
-        // These high numbers of docs and terms are important to trigger page recycling
-        final int numDocs = scaledRandomIntBetween(10000, 20000);
-        final int maxNumTerms = randomIntBetween(10, 100000);
+        final int numDocs = scaledRandomIntBetween(1000, 2000);
+        final int maxNumTerms = randomIntBetween(10, 5000);
 
         final IntOpenHashSet valuesSet = new IntOpenHashSet();
-        wipeIndices("idx");
-        prepareCreate("idx").addMapping("type", jsonBuilder().startObject()
-              .startObject("type")
-                .startObject("properties")
-                  .startObject("string_values")
-                    .field("type", "string")
-                    .field("index", "not_analyzed")
-                  .endObject()
-                  .startObject("long_values")
-                    .field("type", "long")
-                  .endObject()
-                  .startObject("double_values")
-                    .field("type", "double")
-                  .endObject()
-                .endObject()
-              .endObject()).execute().actionGet();
+        immutableCluster().wipeIndices("idx");
+        prepareCreate("idx")
+                .setSettings(ImmutableSettings.builder().put(InternalGlobalOrdinalsBuilder.ORDINAL_MAPPING_THRESHOLD_INDEX_SETTING_KEY, randomIntBetween(1, maxNumTerms)))
+                .addMapping("type", jsonBuilder().startObject()
+                        .startObject("type")
+                        .startObject("properties")
+                        .startObject("string_values")
+                        .field("type", "string")
+                        .field("index", "not_analyzed")
+                        .startObject("fields")
+                            .startObject("doc_values")
+                                .field("type", "string")
+                                .field("index", "no")
+                                .startObject("fielddata")
+                                    .field("format", "doc_values")
+                                .endObject()
+                            .endObject()
+                        .endObject()
+                        .endObject()
+                        .startObject("long_values")
+                        .field("type", "long")
+                        .endObject()
+                        .startObject("double_values")
+                        .field("type", "double")
+                        .endObject()
+                        .endObject()
+                        .endObject()).execute().actionGet();
+
+        List<IndexRequestBuilder> indexingRequests = Lists.newArrayList();
         for (int i = 0; i < numDocs; ++i) {
             final int[] values = new int[randomInt(4)];
             for (int j = 0; j < values.length; ++j) {
@@ -184,16 +202,27 @@ public class RandomTests extends ElasticsearchIntegrationTest {
                 source = source.value(Integer.toString(values[j]));
             }
             source = source.endArray().endObject();
-            client().prepareIndex("idx", "type").setSource(source).execute().actionGet();
+            indexingRequests.add(client().prepareIndex("idx", "type").setSource(source));
         }
-        assertNoFailures(client().admin().indices().prepareRefresh("idx").setIndicesOptions(IndicesOptions.lenient()).execute().get());
+        indexRandom(true, indexingRequests);
+
+        assertNoFailures(client().admin().indices().prepareRefresh("idx").setIndicesOptions(IndicesOptions.lenientExpandOpen()).execute().get());
+
+        TermsAggregatorFactory.ExecutionMode[] globalOrdinalModes = new TermsAggregatorFactory.ExecutionMode[]{
+                TermsAggregatorFactory.ExecutionMode.GLOBAL_ORDINALS_HASH,
+                TermsAggregatorFactory.ExecutionMode.GLOBAL_ORDINALS
+        };
 
         SearchResponse resp = client().prepareSearch("idx")
                 .addAggregation(terms("long").field("long_values").size(maxNumTerms).subAggregation(min("min").field("num")))
                 .addAggregation(terms("double").field("double_values").size(maxNumTerms).subAggregation(max("max").field("num")))
-                .addAggregation(terms("string_map").field("string_values").executionHint(TermsAggregatorFactory.EXECUTION_HINT_VALUE_MAP).size(maxNumTerms).subAggregation(stats("stats").field("num")))
-                .addAggregation(terms("string_ordinals").field("string_values").executionHint(TermsAggregatorFactory.EXECUTION_HINT_VALUE_ORDINALS).size(maxNumTerms).subAggregation(extendedStats("stats").field("num"))).execute().actionGet();
-        assertEquals(0, resp.getFailedShards());
+                .addAggregation(terms("string_map").field("string_values").executionHint(TermsAggregatorFactory.ExecutionMode.MAP.toString()).size(maxNumTerms).subAggregation(stats("stats").field("num")))
+                .addAggregation(terms("string_ordinals").field("string_values").executionHint(TermsAggregatorFactory.ExecutionMode.ORDINALS.toString()).size(maxNumTerms).subAggregation(extendedStats("stats").field("num")))
+                .addAggregation(terms("string_global_ordinals").field("string_values").executionHint(globalOrdinalModes[randomInt(globalOrdinalModes.length - 1)].toString()).size(maxNumTerms).subAggregation(extendedStats("stats").field("num")))
+                .addAggregation(terms("string_global_ordinals_doc_values").field("string_values.doc_values").executionHint(globalOrdinalModes[randomInt(globalOrdinalModes.length - 1)].toString()).size(maxNumTerms).subAggregation(extendedStats("stats").field("num")))
+                .execute().actionGet();
+        assertAllSuccessful(resp);
+        assertEquals(numDocs, resp.getHits().getTotalHits());
 
         final Terms longTerms = resp.getAggregations().get("long");
         final Terms doubleTerms = resp.getAggregations().get("double");
@@ -221,7 +250,7 @@ public class RandomTests extends ElasticsearchIntegrationTest {
     public void testDuelTermsHistogram() throws Exception {
         createIndex("idx");
 
-        final int numDocs = scaledRandomIntBetween(1000, 5000);
+        final int numDocs = scaledRandomIntBetween(500, 5000);
         final int maxNumTerms = randomIntBetween(10, 2000);
         final int interval = randomIntBetween(1, 100);
 
@@ -242,14 +271,14 @@ public class RandomTests extends ElasticsearchIntegrationTest {
             source = source.endArray().endObject();
             client().prepareIndex("idx", "type").setSource(source).execute().actionGet();
         }
-        assertNoFailures(client().admin().indices().prepareRefresh("idx").setIndicesOptions(IndicesOptions.lenient()).execute().get());
+        assertNoFailures(client().admin().indices().prepareRefresh("idx").setIndicesOptions(IndicesOptions.lenientExpandOpen()).execute().get());
 
         SearchResponse resp = client().prepareSearch("idx")
                 .addAggregation(terms("terms").field("values").script("floor(_value / interval)").param("interval", interval).size(maxNumTerms))
                 .addAggregation(histogram("histo").field("values").interval(interval))
                 .execute().actionGet();
 
-        assertThat(resp.getFailedShards(), equalTo(0));
+        assertSearchResponse(resp);
 
         Terms terms = resp.getAggregations().get("terms");
         assertThat(terms, notNullValue());
@@ -267,25 +296,17 @@ public class RandomTests extends ElasticsearchIntegrationTest {
         // test high numbers of percentile buckets to make sure paging and release work correctly
         createIndex("idx");
 
-        final int numDocs = scaledRandomIntBetween(25000, 50000);
+        final int numDocs = scaledRandomIntBetween(2500, 5000);
         logger.info("Indexing [" + numDocs +"] docs");
-        int t = 0;
-        for (int i = 0; i < numDocs; ) {
-            BulkRequestBuilder request = client().prepareBulk();
-            final int bulkSize = Math.min(numDocs - i, 100);
-            client().prepareIndex("idx", "type").setSource("double_value", randomDouble()).execute().actionGet();
-            for (int j = 0; j < bulkSize; ++j) {
-                ++t;
-                request.add(client().prepareIndex("idx", "type", Integer.toString(i++)).setSource("double_value", randomDouble()));
-            }
-            BulkResponse response = request.execute().actionGet();
-            assertFalse(response.buildFailureMessage(), response.hasFailures());
+        List<IndexRequestBuilder> indexingRequests = Lists.newArrayList();
+        for (int i = 0; i < numDocs; ++i) {
+            indexingRequests.add(client().prepareIndex("idx", "type", Integer.toString(i)).setSource("double_value", randomDouble()));
         }
-        assertEquals(numDocs, t);
-        assertNoFailures(client().admin().indices().prepareRefresh("idx").execute().get());
+        indexRandom(true, indexingRequests);
 
         SearchResponse response = client().prepareSearch("idx").addAggregation(terms("terms").field("double_value").subAggregation(percentiles("pcts").field("double_value"))).execute().actionGet();
-        assertNoFailures(response);
+        assertAllSuccessful(response);
+        assertEquals(numDocs, response.getHits().getTotalHits());
     }
 
 }

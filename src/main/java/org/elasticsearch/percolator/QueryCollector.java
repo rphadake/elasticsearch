@@ -93,7 +93,7 @@ abstract class QueryCollector extends Collector {
             AggregationContext aggregationContext = new AggregationContext(context);
             context.aggregations().aggregationContext(aggregationContext);
 
-            List<Aggregator> aggregatorCollectors = new ArrayList<Aggregator>();
+            List<Aggregator> aggregatorCollectors = new ArrayList<>();
             Aggregator[] aggregators = context.aggregations().factories().createTopLevelAggregators(aggregationContext);
             for (int i = 0; i < aggregators.length; i++) {
                 if (!(aggregators[i] instanceof GlobalAggregator)) {
@@ -107,6 +107,7 @@ abstract class QueryCollector extends Collector {
             if (!aggregatorCollectors.isEmpty()) {
                 facetAggCollectorBuilder.add(new AggregationPhase.AggregationsCollector(aggregatorCollectors, aggregationContext));
             }
+            aggregationContext.setNextReader(context.searcher().getIndexReader().getContext());
         }
         facetAndAggregatorCollector = facetAggCollectorBuilder.build();
     }
@@ -173,8 +174,8 @@ abstract class QueryCollector extends Collector {
         final PercolateContext context;
         final HighlightPhase highlightPhase;
 
-        final List<BytesRef> matches = new ArrayList<BytesRef>();
-        final List<Map<String, HighlightField>> hls = new ArrayList<Map<String, HighlightField>>();
+        final List<BytesRef> matches = new ArrayList<>();
+        final List<Map<String, HighlightField>> hls = new ArrayList<>();
         final boolean limit;
         final int size;
         long counter = 0;
@@ -284,8 +285,8 @@ abstract class QueryCollector extends Collector {
         final PercolateContext context;
         final HighlightPhase highlightPhase;
 
-        final List<BytesRef> matches = new ArrayList<BytesRef>();
-        final List<Map<String, HighlightField>> hls = new ArrayList<Map<String, HighlightField>>();
+        final List<BytesRef> matches = new ArrayList<>();
+        final List<Map<String, HighlightField>> hls = new ArrayList<>();
         // TODO: Use thread local in order to cache the scores lists?
         final FloatArrayList scores = new FloatArrayList();
         final boolean limit;

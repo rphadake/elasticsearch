@@ -20,7 +20,6 @@ package org.elasticsearch.search.aggregations.metrics;
 
 import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
-import org.junit.Before;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,16 +29,17 @@ import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 /**
  *
  */
+@ElasticsearchIntegrationTest.SuiteScopeTest
 public abstract class AbstractNumericTests extends ElasticsearchIntegrationTest {
 
-    protected long minValue, maxValue, minValues, maxValues;
+    protected static long minValue, maxValue, minValues, maxValues;
 
-    @Before
-    public void init() throws Exception {
+    @Override
+    public void setupSuiteScopeCluster() throws Exception {
         createIndex("idx");
         createIndex("idx_unmapped");
 
-        List<IndexRequestBuilder> builders = new ArrayList<IndexRequestBuilder>();
+        List<IndexRequestBuilder> builders = new ArrayList<>();
 
         final int numDocs = 10;
         for (int i = 0; i < numDocs; i++) { // TODO randomize the size and the params in here?
@@ -60,7 +60,7 @@ public abstract class AbstractNumericTests extends ElasticsearchIntegrationTest 
         // buckets computed.. the empty bucket is the one associated with key "1". then each test will have
         // to check that this bucket exists with the appropriate sub aggregations.
         prepareCreate("empty_bucket_idx").addMapping("type", "value", "type=integer").execute().actionGet();
-        builders = new ArrayList<IndexRequestBuilder>();
+        builders = new ArrayList<>();
         for (int i = 0; i < 2; i++) {
             builders.add(client().prepareIndex("empty_bucket_idx", "type", ""+i).setSource(jsonBuilder()
                     .startObject()

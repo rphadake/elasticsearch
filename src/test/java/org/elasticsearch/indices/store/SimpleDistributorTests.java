@@ -50,6 +50,7 @@ public class SimpleDistributorTests extends ElasticsearchIntegrationTest {
 
     @Test
     public void testDirectoryToString() throws IOException {
+        cluster().wipeTemplates(); // no random settings please
         createIndexWithStoreType("test", "niofs", "least_used");
         String storeString = getStoreDirectory("test", 0).toString();
         logger.info(storeString);
@@ -108,7 +109,7 @@ public class SimpleDistributorTests extends ElasticsearchIntegrationTest {
     }
 
     private void createIndexWithStoreType(String index, String storeType, String distributor) {
-        wipeIndices(index);
+        immutableCluster().wipeIndices(index);
         client().admin().indices().prepareCreate(index)
                 .setSettings(settingsBuilder()
                         .put("index.store.distributor", distributor)
@@ -121,7 +122,7 @@ public class SimpleDistributorTests extends ElasticsearchIntegrationTest {
     }
 
     private void createIndexWithoutRateLimitingStoreType(String index, String storeType, String distributor) {
-        wipeIndices(index);
+        immutableCluster().wipeIndices(index);
         client().admin().indices().prepareCreate(index)
                 .setSettings(settingsBuilder()
                         .put("index.store.distributor", distributor)

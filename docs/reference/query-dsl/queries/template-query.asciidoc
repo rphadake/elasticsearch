@@ -1,14 +1,14 @@
 [[query-dsl-template-query]]
 === Template Query
 
-coming[1.1.0]
+added[1.1.0]
 
 A query that accepts a query template and a map of key/value pairs to fill in
 template parameters.
 
 [source,js]
 ------------------------------------------
-GET _search
+GET /_search
 {
     "query": {
         "template": {
@@ -23,15 +23,15 @@ GET _search
 ------------------------------------------
 
 
-Alternatively escaping the template works as well:
+Alternatively passing the template as an escaped string works as well:
 
 [source,js]
 ------------------------------------------
-GET _search
+GET /_search
 {
     "query": {
         "template": {
-            "query": "{\"match_{{template}}\": {}}\"",
+            "query": "{\"match_{{template}}\": {}}\"", <1>
             "params" : {
                 "template" : "all"
             }
@@ -39,18 +39,21 @@ GET _search
     }
 }
 ------------------------------------------
+<1> New line characters (`\n`) should be escaped as `\\n` or removed,
+    and quotes (`"`) should be escaped as `\\"`.
 
-You register a template by storing it in the conf/scripts directory of
-elasticsearch. In order to execute the stored template reference it in the query parameters:
+You can register a template by storing it in the `config/scripts` directory, in a file using the `.mustache` extension.
+In order to execute the stored template, reference it by name in the `query`
+parameter:
 
 
 [source,js]
 ------------------------------------------
-GET _search
+GET /_search
 {
     "query": {
         "template": {
-            "query": "storedTemplate",
+            "query": "storedTemplate", <1>
             "params" : {
                 "template" : "all"
             }
@@ -59,7 +62,7 @@ GET _search
 }
 
 ------------------------------------------
-
+<1> Name of the the query template in `config/scripts/`, i.e., `storedTemplate.mustache`.
 
 Templating is based on Mustache. For simple token substitution all you provide
 is a query containing some variable that you want to substitute and the actual
@@ -68,7 +71,7 @@ values:
 
 [source,js]
 ------------------------------------------
-GET _search
+GET /_search
 {
     "query": {
         "template": {
@@ -79,23 +82,19 @@ GET _search
         }
     }
 }
-
 ------------------------------------------
 
 which is then turned into:
 
 [source,js]
 ------------------------------------------
-GET _search
 {
     "query": {
-            "match_all": {}
+        "match_all": {}
     }
 }
 ------------------------------------------
 
-
-For more information on how Mustache templating and what kind of templating you
-can do with it check out the [online
-documentation](http://mustache.github.io/mustache.5.html) of the mustache project.
+There is also a dedicated `template` endpoint, allows you to template an entire search request.
+Please see <<search-template>> for more details.
 

@@ -56,7 +56,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 public final class MockInternalEngine extends InternalEngine implements Engine {
-    public static final ConcurrentMap<AssertingSearcher, RuntimeException> INFLIGHT_ENGINE_SEARCHERS = new ConcurrentHashMap<AssertingSearcher, RuntimeException>();
+    public static final ConcurrentMap<AssertingSearcher, RuntimeException> INFLIGHT_ENGINE_SEARCHERS = new ConcurrentHashMap<>();
     public static final String WRAP_READER_RATIO = "index.engine.mock.random.wrap_reader_ratio";
     public static final String READER_WRAPPER_TYPE = "index.engine.mock.random.wrapper";
 
@@ -72,7 +72,7 @@ public final class MockInternalEngine extends InternalEngine implements Engine {
                               CodecService codecService) throws EngineException {
         super(shardId, indexSettings, threadPool, indexSettingsService, indexingService, warmer, store,
                 deletionPolicy, translog, mergePolicyProvider, mergeScheduler, analysisService, similarityService, codecService);
-        final long seed = indexSettings.getAsLong(ElasticsearchIntegrationTest.INDEX_SEED_SETTING, 0l);
+        final long seed = indexSettings.getAsLong(ElasticsearchIntegrationTest.SETTING_INDEX_SEED, 0l);
         random = new Random(seed);
         final double ratio = indexSettings.getAsDouble(WRAP_READER_RATIO, 0.0d); // DISABLED by default - AssertingDR is crazy slow
         wrapper = indexSettings.getAsClass(READER_WRAPPER_TYPE, AssertingDirectoryReader.class);
@@ -83,7 +83,8 @@ public final class MockInternalEngine extends InternalEngine implements Engine {
     }
 
 
-    public void close() throws ElasticsearchException {
+    @Override
+    public void close() {
         try {
             super.close();
         } finally {
@@ -162,7 +163,7 @@ public final class MockInternalEngine extends InternalEngine implements Engine {
         }
 
         @Override
-        public boolean release() throws ElasticsearchException {
+        public void close() throws ElasticsearchException {
             RuntimeException remove = INFLIGHT_ENGINE_SEARCHERS.remove(this);
             synchronized (lock) {
                 // make sure we only get this once and store the stack of the first caller!
@@ -181,7 +182,7 @@ public final class MockInternalEngine extends InternalEngine implements Engine {
             // problems.
             assert refCount > 0 : "IndexReader#getRefCount() was [" + refCount + "] expected a value > [0] - reader is already closed. Initial refCount was: [" + initialRefCount + "]";
             try {
-                return wrappedSearcher.release();
+                wrappedSearcher.close();
             } catch (RuntimeException ex) {
                 logger.debug("Failed to release searcher", ex);
                 throw ex;

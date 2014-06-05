@@ -26,8 +26,11 @@ import org.apache.lucene.util.packed.MonotonicAppendingLongBuffer;
 import org.elasticsearch.common.breaker.MemoryCircuitBreaker;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.Index;
+import org.elasticsearch.index.fielddata.FieldDataType;
+import org.elasticsearch.index.fielddata.IndexFieldData;
+import org.elasticsearch.index.fielddata.IndexFieldDataCache;
 import org.elasticsearch.index.fielddata.RamAccountingTermsEnum;
-import org.elasticsearch.index.fielddata.*;
+import org.elasticsearch.index.fielddata.ordinals.GlobalOrdinalsBuilder;
 import org.elasticsearch.index.fielddata.ordinals.Ordinals;
 import org.elasticsearch.index.fielddata.ordinals.OrdinalsBuilder;
 import org.elasticsearch.index.mapper.FieldMapper;
@@ -41,31 +44,31 @@ import java.io.IOException;
  */
 public class PagedBytesIndexFieldData extends AbstractBytesIndexFieldData<PagedBytesAtomicFieldData> {
 
-    private final CircuitBreakerService breakerService;
 
     public static class Builder implements IndexFieldData.Builder {
 
         @Override
         public IndexFieldData<PagedBytesAtomicFieldData> build(Index index, @IndexSettings Settings indexSettings, FieldMapper<?> mapper,
-                                                               IndexFieldDataCache cache, CircuitBreakerService breakerService, MapperService mapperService) {
-            return new PagedBytesIndexFieldData(index, indexSettings, mapper.names(), mapper.fieldDataType(), cache, breakerService);
+                                                               IndexFieldDataCache cache, CircuitBreakerService breakerService, MapperService mapperService,
+                                                               GlobalOrdinalsBuilder globalOrdinalBuilder) {
+            return new PagedBytesIndexFieldData(index, indexSettings, mapper.names(), mapper.fieldDataType(), cache, breakerService, globalOrdinalBuilder);
         }
     }
 
     public PagedBytesIndexFieldData(Index index, @IndexSettings Settings indexSettings, FieldMapper.Names fieldNames,
-                                    FieldDataType fieldDataType, IndexFieldDataCache cache, CircuitBreakerService breakerService) {
-        super(index, indexSettings, fieldNames, fieldDataType, cache);
-        this.breakerService = breakerService;
+                                    FieldDataType fieldDataType, IndexFieldDataCache cache, CircuitBreakerService breakerService,
+                                    GlobalOrdinalsBuilder globalOrdinalsBuilder) {
+        super(index, indexSettings, fieldNames, fieldDataType, cache, globalOrdinalsBuilder, breakerService);
     }
 
     @Override
     public PagedBytesAtomicFieldData loadDirect(AtomicReaderContext context) throws Exception {
         AtomicReader reader = context.reader();
 
-        PagedBytesEstimator estimator = new PagedBytesEstimator(context, breakerService.getBreaker());
+        PagedBytesEstimator estimator = new PagedBytesEstimator(context, breakerService.getBreaker(), getFieldNames().fullName());
         Terms terms = reader.terms(getFieldNames().indexName());
         if (terms == null) {
-            PagedBytesAtomicFieldData emptyData = PagedBytesAtomicFieldData.empty(reader.maxDoc());
+            PagedBytesAtomicFieldData emptyData = PagedBytesAtomicFieldData.empty();
             estimator.adjustForNoTerms(emptyData.getMemorySizeInBytes());
             return emptyData;
         }
@@ -73,7 +76,6 @@ public class PagedBytesIndexFieldData extends AbstractBytesIndexFieldData<PagedB
         final PagedBytes bytes = new PagedBytes(15);
 
         final MonotonicAppendingLongBuffer termOrdToBytesOffset = new MonotonicAppendingLongBuffer();
-        termOrdToBytesOffset.add(0); // first ord is reserved for missing values
         final long numTerms;
         if (regex == null && frequency == null) {
             numTerms = terms.size();
@@ -83,8 +85,6 @@ public class PagedBytesIndexFieldData extends AbstractBytesIndexFieldData<PagedB
         final float acceptableTransientOverheadRatio = fieldDataType.getSettings().getAsFloat(
                 FilterSettingFields.ACCEPTABLE_TRANSIENT_OVERHEAD_RATIO, OrdinalsBuilder.DEFAULT_ACCEPTABLE_OVERHEAD_RATIO);
 
-        OrdinalsBuilder builder = new OrdinalsBuilder(numTerms, reader.maxDoc(), acceptableTransientOverheadRatio);
-
         // Wrap the context in an estimator and use it to either estimate
         // the entire set, or wrap the TermsEnum so it can be calculated
         // per-term
@@ -92,7 +92,7 @@ public class PagedBytesIndexFieldData extends AbstractBytesIndexFieldData<PagedB
         TermsEnum termsEnum = estimator.beforeLoad(terms);
         boolean success = false;
 
-        try {
+        try (OrdinalsBuilder builder = new OrdinalsBuilder(numTerms, reader.maxDoc(), acceptableTransientOverheadRatio)) {
             // 0 is reserved for "unset"
             bytes.copyUsingLengthPrefix(new BytesRef());
 
@@ -121,7 +121,7 @@ public class PagedBytesIndexFieldData extends AbstractBytesIndexFieldData<PagedB
                 // Call .afterLoad() to adjust the breaker now that we have an exact size
                 estimator.afterLoad(termsEnum, data.getMemorySizeInBytes());
             }
-            builder.close();
+
         }
     }
 
@@ -134,11 +134,13 @@ public class PagedBytesIndexFieldData extends AbstractBytesIndexFieldData<PagedB
 
         private final AtomicReaderContext context;
         private final MemoryCircuitBreaker breaker;
+        private final String fieldName;
         private long estimatedBytes;
 
-        PagedBytesEstimator(AtomicReaderContext context, MemoryCircuitBreaker breaker) {
+        PagedBytesEstimator(AtomicReaderContext context, MemoryCircuitBreaker breaker, String fieldName) {
             this.breaker = breaker;
             this.context = context;
+            this.fieldName = fieldName;
         }
 
         /**
@@ -211,15 +213,15 @@ public class PagedBytesIndexFieldData extends AbstractBytesIndexFieldData<PagedB
                 if (logger.isTraceEnabled()) {
                     logger.trace("Filter exists, can't circuit break normally, using RamAccountingTermsEnum");
                 }
-                return new RamAccountingTermsEnum(filter(terms, reader), breaker, this);
+                return new RamAccountingTermsEnum(filter(terms, reader), breaker, this, this.fieldName);
             } else {
                 estimatedBytes = this.estimateStringFieldData();
                 // If we weren't able to estimate, wrap in the RamAccountingTermsEnum
                 if (estimatedBytes == 0) {
-                    return new RamAccountingTermsEnum(filter(terms, reader), breaker, this);
+                    return new RamAccountingTermsEnum(filter(terms, reader), breaker, this, this.fieldName);
                 }
 
-                breaker.addEstimateBytesAndMaybeBreak(estimatedBytes);
+                breaker.addEstimateBytesAndMaybeBreak(estimatedBytes, fieldName);
                 return filter(terms, reader);
             }
         }

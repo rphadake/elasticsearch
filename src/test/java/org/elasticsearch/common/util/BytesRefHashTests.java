@@ -23,7 +23,7 @@ import com.carrotsearch.hppc.ObjectLongMap;
 import com.carrotsearch.hppc.ObjectLongOpenHashMap;
 import com.carrotsearch.hppc.cursors.ObjectLongCursor;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util._TestUtil;
+import org.apache.lucene.util.TestUtil;
 import org.elasticsearch.test.ElasticsearchTestCase;
 import org.junit.Test;
 
@@ -36,7 +36,7 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
 
     private void newHash() {
         if (hash != null) {
-            hash.release();
+            hash.close();
         }
         // Test high load factors to make sure that collision resolution works fine
         final float maxLoadFactor = 0.6f + randomFloat() * 0.39f;
@@ -55,7 +55,7 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
         for (int i = 0; i < values.length; ++i) {
             values[i] = new BytesRef(randomAsciiOfLength(5));
         }
-        final ObjectLongMap<BytesRef> valueToId = new ObjectLongOpenHashMap<BytesRef>();
+        final ObjectLongMap<BytesRef> valueToId = new ObjectLongOpenHashMap<>();
         final BytesRef[] idToValue = new BytesRef[values.length];
         final int iters = randomInt(1000000);
         for (int i = 0; i < iters; ++i) {
@@ -83,7 +83,7 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
                 assertEquals(idToValue[(int) id], spare);
             }
         }
-        hash.release();
+        hash.close();
     }
 
     // START - tests borrowed from LUCENE
@@ -100,7 +100,7 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
             for (int i = 0; i < 797; i++) {
                 String str;
                 do {
-                    str = _TestUtil.randomRealisticUnicodeString(getRandom(), 1000);
+                    str = TestUtil.randomRealisticUnicodeString(getRandom(), 1000);
                 } while (str.length() == 0);
                 ref.copyChars(str);
                 long count = hash.size();
@@ -114,7 +114,7 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
                 }
             }
         }
-        hash.release();
+        hash.close();
     }
 
     /**
@@ -128,12 +128,12 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
         BytesRef scratch = new BytesRef();
         int num = scaledRandomIntBetween(2, 20);
         for (int j = 0; j < num; j++) {
-            Map<String, Long> strings = new HashMap<String, Long>();
+            Map<String, Long> strings = new HashMap<>();
             int uniqueCount = 0;
             for (int i = 0; i < 797; i++) {
                 String str;
                 do {
-                    str = _TestUtil.randomRealisticUnicodeString(getRandom(), 1000);
+                    str = TestUtil.randomRealisticUnicodeString(getRandom(), 1000);
                 } while (str.length() == 0);
                 ref.copyChars(str);
                 long count = hash.size();
@@ -154,7 +154,7 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
             }
             newHash();
         }
-        hash.release();
+        hash.close();
     }
 
     /**
@@ -168,12 +168,12 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
         BytesRef scratch = new BytesRef();
         int num = scaledRandomIntBetween(2, 20);
         for (int j = 0; j < num; j++) {
-            Set<String> strings = new HashSet<String>();
+            Set<String> strings = new HashSet<>();
             int uniqueCount = 0;
             for (int i = 0; i < 797; i++) {
                 String str;
                 do {
-                    str = _TestUtil.randomRealisticUnicodeString(getRandom(), 1000);
+                    str = TestUtil.randomRealisticUnicodeString(getRandom(), 1000);
                 } while (str.length() == 0);
                 ref.copyChars(str);
                 long count = hash.size();
@@ -195,7 +195,7 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
             assertAllIn(strings, hash);
             newHash();
         }
-        hash.release();
+        hash.close();
     }
 
     @Test
@@ -204,12 +204,12 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
         BytesRef scratch = new BytesRef();
         int num = scaledRandomIntBetween(2, 20);
         for (int j = 0; j < num; j++) {
-            Set<String> strings = new HashSet<String>();
+            Set<String> strings = new HashSet<>();
             int uniqueCount = 0;
             for (int i = 0; i < 797; i++) {
                 String str;
                 do {
-                    str = _TestUtil.randomRealisticUnicodeString(getRandom(), 1000);
+                    str = TestUtil.randomRealisticUnicodeString(getRandom(), 1000);
                 } while (str.length() == 0);
                 ref.copyChars(str);
                 long count = hash.size();
@@ -231,7 +231,7 @@ public class BytesRefHashTests extends ElasticsearchTestCase {
             assertAllIn(strings, hash);
             newHash();
         }
-        hash.release();
+        hash.close();
     }
 
     private void assertAllIn(Set<String> strings, BytesRefHash hash) {

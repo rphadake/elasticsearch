@@ -42,7 +42,7 @@ import org.elasticsearch.transport.TransportService;
  */
 public class TransportGetAction extends TransportShardSingleOperationAction<GetRequest, GetResponse> {
 
-    public static boolean REFRESH_FORCE = false;
+    public static final boolean REFRESH_FORCE = false;
 
     private final IndicesService indicesService;
     private final boolean realtime;
@@ -89,7 +89,7 @@ public class TransportGetAction extends TransportShardSingleOperationAction<GetR
         }
         // update the routing (request#index here is possibly an alias)
         request.routing(state.metaData().resolveIndexRouting(request.routing(), request.index()));
-        request.index(state.metaData().concreteIndex(request.index()));
+        request.index(state.metaData().concreteSingleIndex(request.index()));
 
         // Fail fast on the node that received the request.
         if (request.routing() == null && state.getMetaData().routingRequired(request.index(), request.type())) {

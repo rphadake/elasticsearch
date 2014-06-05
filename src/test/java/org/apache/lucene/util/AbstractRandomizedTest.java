@@ -32,6 +32,8 @@ import com.carrotsearch.randomizedtesting.rules.StaticFieldsInvariantRule;
 import com.carrotsearch.randomizedtesting.rules.SystemPropertiesInvariantRule;
 import org.apache.lucene.util.LuceneTestCase.SuppressCodecs;
 import org.elasticsearch.common.lucene.Lucene;
+import org.elasticsearch.common.settings.ImmutableSettings;
+import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.ElasticsearchTestCase;
 import org.elasticsearch.test.junit.listeners.ReproduceInfoPrinter;
@@ -90,6 +92,8 @@ public abstract class AbstractRandomizedTest extends RandomizedTest {
 
     public static final String SYSPROP_INTEGRATION = "tests.integration";
 
+    public static final String SYSPROP_PROCESSORS = "tests.processors";
+
     // -----------------------------------------------------------------
     // Truly immutable fields and constants, initialized once and valid 
     // for all suites ever since.
@@ -128,12 +132,20 @@ public abstract class AbstractRandomizedTest extends RandomizedTest {
      */
     public static final File TEMP_DIR;
 
+    public static final int TESTS_PROCESSORS;
+
     static {
         String s = System.getProperty("tempDir", System.getProperty("java.io.tmpdir"));
         if (s == null)
             throw new RuntimeException("To run tests, you need to define system property 'tempDir' or 'java.io.tmpdir'.");
         TEMP_DIR = new File(s);
         TEMP_DIR.mkdirs();
+
+        String processors = System.getProperty(SYSPROP_PROCESSORS, ""); // mvn sets "" as default
+        if (processors == null || processors.isEmpty()) {
+            processors = Integer.toString(EsExecutors.boundedNumberOfProcessors(ImmutableSettings.EMPTY));
+        }
+        TESTS_PROCESSORS = Integer.parseInt(processors);
     }
 
     /**
@@ -144,7 +156,8 @@ public abstract class AbstractRandomizedTest extends RandomizedTest {
      * @see #classRules
      */
     private static final String[] IGNORED_INVARIANT_PROPERTIES = {
-            "user.timezone", "java.rmi.server.randomIDs", "sun.nio.ch.bugLevel"
+            "user.timezone", "java.rmi.server.randomIDs", "sun.nio.ch.bugLevel",
+            "solr.directoryFactory", "solr.solr.home", "solr.data.dir" // these might be set by the LuceneTestCase -- ignore
     };
 
     // -----------------------------------------------------------------
@@ -200,7 +213,7 @@ public abstract class AbstractRandomizedTest extends RandomizedTest {
         }
 
         ignoreAfterMaxFailuresDelegate =
-                new AtomicReference<TestRuleIgnoreAfterMaxFailures>(
+                new AtomicReference<>(
                         new TestRuleIgnoreAfterMaxFailures(maxFailures));
         ignoreAfterMaxFailures = TestRuleDelegate.of(ignoreAfterMaxFailuresDelegate);
     }
@@ -224,7 +237,7 @@ public abstract class AbstractRandomizedTest extends RandomizedTest {
      * By-name list of ignored types like loggers etc.
      */
     private final static Set<String> STATIC_LEAK_IGNORED_TYPES =
-            Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
+            Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
                     EnumSet.class.getName())));
 
     private final static Set<Class<?>> TOP_LEVEL_CLASSES =

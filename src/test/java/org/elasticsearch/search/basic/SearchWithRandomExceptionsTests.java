@@ -37,7 +37,9 @@ import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.engine.MockInternalEngine;
 import org.elasticsearch.test.engine.ThrowingAtomicReaderWrapper;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.test.store.MockDirectoryHelper;
+import org.elasticsearch.test.store.MockFSDirectoryService;
 import org.hamcrest.Matchers;
 import org.junit.Test;
 
@@ -47,6 +49,7 @@ import java.util.concurrent.ExecutionException;
 
 import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilder;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
 
 public class SearchWithRandomExceptionsTests extends ElasticsearchIntegrationTest {
     
@@ -83,16 +86,42 @@ public class SearchWithRandomExceptionsTests extends ElasticsearchIntegrationTes
             exceptionRate = 0d;
             exceptionOnOpenRate = 0d;
         }
-        
-        Builder settings = settingsBuilder()
-        .put(indexSettings())
-        .put(MockDirectoryHelper.RANDOM_IO_EXCEPTION_RATE, exceptionRate)
-        .put(MockDirectoryHelper.RANDOM_IO_EXCEPTION_RATE_ON_OPEN, exceptionOnOpenRate)
-        .put(MockDirectoryHelper.CHECK_INDEX_ON_CLOSE, true);
-        logger.info("creating index: [test] using settings: [{}]", settings.build().getAsMap());
-        assertAcked(prepareCreate("test")
-                .setSettings(settings)
-                .addMapping("type", mapping));
+        boolean createIndexWithoutErrors = randomBoolean();
+        long numInitialDocs = 0;
+
+        if (createIndexWithoutErrors) {
+            Builder settings = settingsBuilder()
+                    .put("index.number_of_replicas", randomIntBetween(0, 1))
+                    .put(MockFSDirectoryService.CHECK_INDEX_ON_CLOSE, true)
+                    .put("gateway.type", "local");
+            logger.info("creating index: [test] using settings: [{}]", settings.build().getAsMap());
+            client().admin().indices().prepareCreate("test")
+                    .setSettings(settings)
+                    .addMapping("type", mapping).execute().actionGet();
+            numInitialDocs = between(10, 100);
+            ensureYellow();
+            for (int i = 0; i < numInitialDocs ; i++) {
+                client().prepareIndex("test", "initial", "" + i).setTimeout(TimeValue.timeValueSeconds(1)).setSource("test", "init").get();
+            }
+            client().admin().indices().prepareRefresh("test").execute().get();
+            client().admin().indices().prepareFlush("test").execute().get();
+            client().admin().indices().prepareClose("test").execute().get();
+            client().admin().indices().prepareUpdateSettings("test").setSettings(settingsBuilder()
+                    .put(MockFSDirectoryService.CHECK_INDEX_ON_CLOSE, true)
+                    .put(MockDirectoryHelper.RANDOM_IO_EXCEPTION_RATE, exceptionRate)
+                    .put(MockDirectoryHelper.RANDOM_IO_EXCEPTION_RATE_ON_OPEN, exceptionOnOpenRate));
+            client().admin().indices().prepareOpen("test").execute().get();
+        } else {
+            Builder settings = settingsBuilder()
+            .put("index.number_of_replicas", randomIntBetween(0, 1))
+            .put(MockFSDirectoryService.CHECK_INDEX_ON_CLOSE, false)
+            .put(MockDirectoryHelper.RANDOM_IO_EXCEPTION_RATE, exceptionRate)
+            .put(MockDirectoryHelper.RANDOM_IO_EXCEPTION_RATE_ON_OPEN, exceptionOnOpenRate); // we cannot expect that the index will be valid
+            logger.info("creating index: [test] using settings: [{}]", settings.build().getAsMap());
+            client().admin().indices().prepareCreate("test")
+                    .setSettings(settings)
+                    .addMapping("type", mapping).execute().actionGet();
+        }
         ClusterHealthResponse clusterHealthResponse = client().admin().cluster()
                 .health(Requests.clusterHealthRequest().waitForYellowStatus().timeout(TimeValue.timeValueSeconds(5))).get(); // it's OK to timeout here 
         final int numDocs;
@@ -112,18 +141,20 @@ public class SearchWithRandomExceptionsTests extends ElasticsearchIntegrationTes
         long numCreated = 0;
         boolean[] added = new boolean[numDocs];
         for (int i = 0; i < numDocs ; i++) {
+            added[i] = false;
             try {
-                IndexResponse indexResponse = client().prepareIndex("test", "type", "" + i).setTimeout(TimeValue.timeValueSeconds(1)).setSource("test", English.intToEnglish(i)).get();
+                IndexResponse indexResponse = client().prepareIndex("test", "type", Integer.toString(i)).setTimeout(TimeValue.timeValueSeconds(1)).setSource("test", English.intToEnglish(i)).get();
                 if (indexResponse.isCreated()) {
                     numCreated++;
                     added[i] = true;
                 }
             } catch (ElasticsearchException ex) {
             }
+
         }
-        NumShards test = getNumShards("test");
+        NumShards numShards = getNumShards("test");
         logger.info("Start Refresh");
-        RefreshResponse refreshResponse = client().admin().indices().prepareRefresh("test").execute().get(); // don't assert on failures here
+        final RefreshResponse refreshResponse = client().admin().indices().prepareRefresh("test").execute().get(); // don't assert on failures here
         final boolean refreshFailed = refreshResponse.getShardFailures().length != 0 || refreshResponse.getFailedShards() != 0;
         logger.info("Refresh failed [{}] numShardsFailed: [{}], shardFailuresLength: [{}], successfulShards: [{}], totalShards: [{}] ", refreshFailed, refreshResponse.getFailedShards(), refreshResponse.getShardFailures().length, refreshResponse.getSuccessfulShards(), refreshResponse.getTotalShards());
         final int numSearches = scaledRandomIntBetween(10, 20);
@@ -131,23 +162,43 @@ public class SearchWithRandomExceptionsTests extends ElasticsearchIntegrationTes
         for (int i = 0; i < numSearches; i++) {
             try {
                 int docToQuery = between(0, numDocs-1);
+                long expectedResults = added[docToQuery] ? 1 : 0;
                 logger.info("Searching for [test:{}]", English.intToEnglish(docToQuery));
-                SearchResponse searchResponse = client().prepareSearch().setQuery(QueryBuilders.matchQuery("test", English.intToEnglish(docToQuery))).get();
-                logger.info("Successful shards: [{}]  numShards: [{}]", searchResponse.getSuccessfulShards(), test.numPrimaries);
+                SearchResponse searchResponse = client().prepareSearch().setTypes("type").setQuery(QueryBuilders.matchQuery("test", English.intToEnglish(docToQuery))).get();
+                logger.info("Successful shards: [{}]  numShards: [{}]", searchResponse.getSuccessfulShards(), numShards.numPrimaries);
+                if (searchResponse.getSuccessfulShards() == numShards.numPrimaries && !refreshFailed) {
+                    assertThat(searchResponse.getHits().getTotalHits(), Matchers.equalTo(expectedResults));
+                }
                 // check match all
-                searchResponse = client().prepareSearch().setQuery(QueryBuilders.matchAllQuery()).get();
+                searchResponse = client().prepareSearch().setTypes("type").setQuery(QueryBuilders.matchAllQuery()).get();
+                logger.info("Match all Successful shards: [{}]  numShards: [{}]", searchResponse.getSuccessfulShards(), numShards.numPrimaries);
+                if (searchResponse.getSuccessfulShards() == numShards.numPrimaries && !refreshFailed) {
+                    assertThat(searchResponse.getHits().getTotalHits(), Matchers.equalTo(numCreated));
+                }
             } catch (SearchPhaseExecutionException ex) {
-                if (!expectAllShardsFailed) {
+                logger.info("SearchPhaseException: [{}]", ex.getMessage());
+                // if a scheduled refresh or flush fails all shards we see all shards failed here
+                if (!(expectAllShardsFailed || refreshResponse.getSuccessfulShards() == 0 || ex.getMessage().contains("all shards failed"))) {
                     throw ex;
-                } else {
-                    logger.info("expected SearchPhaseException: [{}]", ex.getMessage());
                 }
             }
-            
+        }
+
+        if (createIndexWithoutErrors) {
+            // check the index still contains the records that we indexed without errors
+            client().admin().indices().prepareClose("test").execute().get();
+            client().admin().indices().prepareUpdateSettings("test").setSettings(settingsBuilder()
+                    .put(MockDirectoryHelper.RANDOM_IO_EXCEPTION_RATE, 0)
+                    .put(MockDirectoryHelper.RANDOM_IO_EXCEPTION_RATE_ON_OPEN, 0));
+            client().admin().indices().prepareOpen("test").execute().get();
+            ensureGreen();
+            SearchResponse searchResponse = client().prepareSearch().setTypes("initial").setQuery(QueryBuilders.matchQuery("test", "init")).get();
+            assertHitCount(searchResponse, numInitialDocs);
         }
     }
 
     @Test
+    @TestLogging("action.admin.indices.refresh:TRACE,action.search.type:TRACE,cluster.service:TRACE")
     public void testRandomExceptions() throws IOException, InterruptedException, ExecutionException {
         String mapping = XContentFactory.jsonBuilder().
                 startObject().
@@ -249,7 +300,7 @@ public class SearchWithRandomExceptionsTests extends ElasticsearchIntegrationTes
             private final double lowLevelRatio;
 
             ThrowingSubReaderWrapper(Settings settings) {
-                final long seed = settings.getAsLong(ElasticsearchIntegrationTest.INDEX_SEED_SETTING, 0l);
+                final long seed = settings.getAsLong(SETTING_INDEX_SEED, 0l);
                 this.topLevelRatio = settings.getAsDouble(EXCEPTION_TOP_LEVEL_RATIO_KEY, 0.1d);
                 this.lowLevelRatio = settings.getAsDouble(EXCEPTION_LOW_LEVEL_RATIO_KEY, 0.1d);
                 this.random = new Random(seed);

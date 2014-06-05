@@ -28,7 +28,6 @@ import org.elasticsearch.client.Client;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.ElasticsearchIntegrationTest.ClusterScope;
-import org.elasticsearch.test.ElasticsearchIntegrationTest.Scope;
 import org.elasticsearch.test.TestCluster.RestartCallback;
 import org.junit.Test;
 
@@ -38,6 +37,7 @@ import static org.elasticsearch.client.Requests.clusterHealthRequest;
 import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilder;
 import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
+import static org.elasticsearch.test.ElasticsearchIntegrationTest.*;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
 import static org.hamcrest.Matchers.*;
@@ -45,7 +45,7 @@ import static org.hamcrest.Matchers.*;
 /**
  *
  */
-@ClusterScope(numNodes=0, scope=Scope.TEST)
+@ClusterScope(numDataNodes =0, scope= Scope.TEST)
 public class QuorumLocalGatewayTests extends ElasticsearchIntegrationTest {
 
     @Override
@@ -57,10 +57,7 @@ public class QuorumLocalGatewayTests extends ElasticsearchIntegrationTest {
     @Slow
     public void testChangeInitialShardsRecovery() throws Exception {
         logger.info("--> starting 3 nodes");
-        final String[] nodes = new String[3];
-        nodes[0] = cluster().startNode(settingsBuilder().put("gateway.type", "local").build());
-        nodes[1] = cluster().startNode(settingsBuilder().put("gateway.type", "local").build());
-        nodes[2] = cluster().startNode(settingsBuilder().put("gateway.type", "local").build());
+        final String[] nodes = cluster().startNodesAsync(3, settingsBuilder().put("gateway.type", "local").build()).get().toArray(new String[0]);
 
         createIndex("test");
         ensureGreen();
@@ -126,9 +123,9 @@ public class QuorumLocalGatewayTests extends ElasticsearchIntegrationTest {
     public void testQuorumRecovery() throws Exception {
 
         logger.info("--> starting 3 nodes");
-        cluster().startNode(settingsBuilder().put("gateway.type", "local").build());
-        cluster().startNode(settingsBuilder().put("gateway.type", "local").build());
-        cluster().startNode(settingsBuilder().put("gateway.type", "local").build());
+        cluster().startNodesAsync(3, settingsBuilder().put("gateway.type", "local").build()).get();
+        // we are shutting down nodes - make sure we don't have 2 clusters if we test network
+        setMinimumMasterNodes(2);
 
         createIndex("test");
         ensureGreen();
@@ -145,9 +142,6 @@ public class QuorumLocalGatewayTests extends ElasticsearchIntegrationTest {
         for (int i = 0; i < 10; i++) {
             assertHitCount(client().prepareCount().setQuery(matchAllQuery()).get(), 2l);
         }
-        client().admin().cluster().prepareUpdateSettings().setTransientSettings(settingsBuilder()
-                .put("discovery.zen.minimum_master_nodes", 2)) // we are shutting down nodes - make sure we don't have 2 clusters if we test network
-                .get();
         logger.info("--> restart all nodes");
         cluster().fullRestart(new RestartCallback() {
             @Override

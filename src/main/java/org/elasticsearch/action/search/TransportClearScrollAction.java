@@ -37,6 +37,7 @@ import org.elasticsearch.transport.TransportService;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.elasticsearch.action.search.type.TransportSearchHelper.parseScrollId;
@@ -66,9 +67,10 @@ public class TransportClearScrollAction extends TransportAction<ClearScrollReque
         final DiscoveryNodes nodes;
         final CountDown expectedOps;
         final ClearScrollRequest request;
-        final List<Tuple<String, Long>[]> contexts = new ArrayList<Tuple<String, Long>[]>();
-        final AtomicReference<Throwable> expHolder;
+        final List<Tuple<String, Long>[]> contexts = new ArrayList<>();
         final ActionListener<ClearScrollResponse> listener;
+        final AtomicReference<Throwable> expHolder;
+        final AtomicInteger numberOfFreedSearchContexts = new AtomicInteger(0);
 
         private Async(ClearScrollRequest request, ActionListener<ClearScrollResponse> listener, ClusterState clusterState) {
             int expectedOps = 0;
@@ -85,13 +87,13 @@ public class TransportClearScrollAction extends TransportAction<ClearScrollReque
 
             this.request = request;
             this.listener = listener;
-            this.expHolder = new AtomicReference<Throwable>();
+            this.expHolder = new AtomicReference<>();
             this.expectedOps = new CountDown(expectedOps);
         }
 
         public void run() {
             if (expectedOps.isCountedDown()) {
-                listener.onResponse(new ClearScrollResponse(true));
+                listener.onResponse(new ClearScrollResponse(true, 0));
                 return;
             }
 
@@ -99,8 +101,8 @@ public class TransportClearScrollAction extends TransportAction<ClearScrollReque
                 for (final DiscoveryNode node : nodes) {
                     searchServiceTransportAction.sendClearAllScrollContexts(node, request, new ActionListener<Boolean>() {
                         @Override
-                        public void onResponse(Boolean success) {
-                            onFreedContext();
+                        public void onResponse(Boolean freed) {
+                            onFreedContext(freed);
                         }
 
                         @Override
@@ -114,14 +116,14 @@ public class TransportClearScrollAction extends TransportAction<ClearScrollReque
                     for (Tuple<String, Long> target : context) {
                         final DiscoveryNode node = nodes.get(target.v1());
                         if (node == null) {
-                            onFreedContext();
+                            onFreedContext(false);
                             continue;
                         }
 
                         searchServiceTransportAction.sendFreeContext(node, target.v2(), request, new ActionListener<Boolean>() {
                             @Override
-                            public void onResponse(Boolean success) {
-                                onFreedContext();
+                            public void onResponse(Boolean freed) {
+                                onFreedContext(freed);
                             }
 
                             @Override
@@ -134,17 +136,20 @@ public class TransportClearScrollAction extends TransportAction<ClearScrollReque
             }
         }
 
-        void onFreedContext() {
+        void onFreedContext(boolean freed) {
+            if (freed) {
+                numberOfFreedSearchContexts.incrementAndGet();
+            }
             if (expectedOps.countDown()) {
                 boolean succeeded = expHolder.get() == null;
-                listener.onResponse(new ClearScrollResponse(succeeded));
+                listener.onResponse(new ClearScrollResponse(succeeded, numberOfFreedSearchContexts.get()));
             }
         }
 
         void onFailedFreedContext(Throwable e, DiscoveryNode node) {
             logger.warn("Clear SC failed on node[{}]", e, node);
             if (expectedOps.countDown()) {
-                listener.onResponse(new ClearScrollResponse(false));
+                listener.onResponse(new ClearScrollResponse(false, numberOfFreedSearchContexts.get()));
             } else {
                 expHolder.set(e);
             }

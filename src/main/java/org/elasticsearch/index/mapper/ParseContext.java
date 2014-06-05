@@ -69,7 +69,7 @@ public class ParseContext {
         /** Add fields so that they can later be fetched using {@link #getByKey(Object)}. */
         public void addWithKey(Object key, IndexableField field) {
             if (keyedFields == null) {
-                keyedFields = new ObjectObjectOpenHashMap<Object, IndexableField>();
+                keyedFields = new ObjectObjectOpenHashMap<>();
             } else if (keyedFields.containsKey(key)) {
                 throw new ElasticsearchIllegalStateException("Only one field can be stored per key");
             }
@@ -83,7 +83,7 @@ public class ParseContext {
         }
 
         public IndexableField[] getFields(String name) {
-            List<IndexableField> f = new ArrayList<IndexableField>();
+            List<IndexableField> f = new ArrayList<>();
             for (IndexableField field : fields) {
                 if (field.name().equals(name)) {
                     f.add(field);
@@ -151,11 +151,12 @@ public class ParseContext {
 
     private StringBuilder stringBuilder = new StringBuilder();
 
-    private Map<String, String> ignoredValues = new HashMap<String, String>();
+    private Map<String, String> ignoredValues = new HashMap<>();
 
     private boolean mappingsModified = false;
     private boolean withinNewMapper = false;
     private boolean withinCopyTo = false;
+    private boolean withinMultiFields = false;
 
     private boolean externalValueSet;
 
@@ -235,6 +236,14 @@ public class ParseContext {
 
     public boolean isWithinCopyTo() {
         return withinCopyTo;
+    }
+
+    public void setWithinMultiFields() {
+        this.withinMultiFields = true;
+    }
+
+    public void clearWithinMultiFields() {
+        this.withinMultiFields = false;
     }
 
     public String index() {
@@ -358,6 +367,9 @@ public class ParseContext {
      */
     private boolean includeInAll(Boolean specificIncludeInAll, boolean indexed) {
         if (withinCopyTo) {
+            return false;
+        }
+        if (withinMultiFields) {
             return false;
         }
         if (!docMapper.allFieldMapper().enabled()) {

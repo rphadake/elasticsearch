@@ -140,7 +140,8 @@ public enum GeoDistance {
 
     public static DistanceBoundingCheck distanceBoundingCheck(double sourceLatitude, double sourceLongitude, double distance, DistanceUnit unit) {
         // angular distance in radians on a great circle
-        double radDist = distance / unit.getEarthRadius();
+        // assume worst-case: use the minor axis
+        double radDist = unit.toMeters(distance) / GeoUtils.EARTH_SEMI_MINOR_AXIS;
 
         double radLat = Math.toRadians(sourceLatitude);
         double radLon = Math.toRadians(sourceLongitude);
@@ -212,7 +213,7 @@ public enum GeoDistance {
         GeoPoint bottomRight();
     }
 
-    public static AlwaysDistanceBoundingCheck ALWAYS_INSTANCE = new AlwaysDistanceBoundingCheck();
+    public static final AlwaysDistanceBoundingCheck ALWAYS_INSTANCE = new AlwaysDistanceBoundingCheck();
 
     private static class AlwaysDistanceBoundingCheck implements DistanceBoundingCheck {
         @Override

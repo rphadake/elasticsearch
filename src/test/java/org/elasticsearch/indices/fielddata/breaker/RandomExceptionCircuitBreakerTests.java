@@ -175,6 +175,7 @@ public class RandomExceptionCircuitBreakerTests extends ElasticsearchIntegration
                 // successfully set back to zero. If there is a bug in the circuit
                 // breaker adjustment code, it should show up here by the breaker
                 // estimate being either positive or negative.
+                ensureGreen("test");  // make sure all shards are there - there could be shards that are still starting up.
                 assertAllSuccessful(client().admin().indices().prepareClearCache("test").setFieldDataCache(true).execute().actionGet());
                 NodesStatsResponse nodeStats = client().admin().cluster().prepareNodesStats()
                     .clear().setBreaker(true).execute().actionGet();
@@ -199,7 +200,7 @@ public class RandomExceptionCircuitBreakerTests extends ElasticsearchIntegration
             private final double lowLevelRatio;
 
             ThrowingSubReaderWrapper(Settings settings) {
-                final long seed = settings.getAsLong(ElasticsearchIntegrationTest.INDEX_SEED_SETTING, 0l);
+                final long seed = settings.getAsLong(SETTING_INDEX_SEED, 0l);
                 this.topLevelRatio = settings.getAsDouble(EXCEPTION_TOP_LEVEL_RATIO_KEY, 0.1d);
                 this.lowLevelRatio = settings.getAsDouble(EXCEPTION_LOW_LEVEL_RATIO_KEY, 0.1d);
                 this.random = new Random(seed);

@@ -21,6 +21,7 @@ package org.elasticsearch.action.mlt;
 
 import org.elasticsearch.ElasticsearchGenerationException;
 import org.elasticsearch.ElasticsearchIllegalArgumentException;
+import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.ValidateActions;
@@ -33,7 +34,6 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.search.Scroll;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 
@@ -54,8 +54,6 @@ import static org.elasticsearch.search.Scroll.readScroll;
  */
 public class MoreLikeThisRequest extends ActionRequest<MoreLikeThisRequest> {
 
-    private static final XContentType contentType = Requests.CONTENT_TYPE;
-
     private String index;
 
     private String type;
@@ -75,6 +73,7 @@ public class MoreLikeThisRequest extends ActionRequest<MoreLikeThisRequest> {
     private int minWordLength = -1;
     private int maxWordLength = -1;
     private float boostTerms = -1;
+    private boolean include = false;
 
     private SearchType searchType = SearchType.DEFAULT;
     private int searchSize = 0;
@@ -316,6 +315,21 @@ public class MoreLikeThisRequest extends ActionRequest<MoreLikeThisRequest> {
         return this.boostTerms;
     }
 
+    /**
+     * Whether to include the queried document. Defaults to <tt>false</tt>.
+     */
+    public MoreLikeThisRequest include(boolean include) {
+        this.include = include;
+        return this;
+    }
+
+    /**
+     * Whether to include the queried document. Defaults to <tt>false</tt>.
+     */
+    public boolean include() {
+        return this.include;
+    }
+
     void beforeLocalFork() {
         if (searchSourceUnsafe) {
             searchSource = searchSource.copyBytesArray();
@@ -345,7 +359,7 @@ public class MoreLikeThisRequest extends ActionRequest<MoreLikeThisRequest> {
 
     public MoreLikeThisRequest searchSource(Map searchSource) {
         try {
-            XContentBuilder builder = XContentFactory.contentBuilder(contentType);
+            XContentBuilder builder = XContentFactory.contentBuilder(Requests.CONTENT_TYPE);
             builder.map(searchSource);
             return searchSource(builder);
         } catch (IOException e) {
@@ -556,6 +570,12 @@ public class MoreLikeThisRequest extends ActionRequest<MoreLikeThisRequest> {
         minWordLength = in.readVInt();
         maxWordLength = in.readVInt();
         boostTerms = in.readFloat();
+        if (in.getVersion().onOrAfter(Version.V_1_2_0)) {
+            include = in.readBoolean();
+        } else {
+            include = false; // hard-coded behavior until Elasticsearch 1.2
+        }
+
         searchType = SearchType.fromId(in.readByte());
         if (in.readBoolean()) {
             searchQueryHint = in.readString();
@@ -625,6 +645,9 @@ public class MoreLikeThisRequest extends ActionRequest<MoreLikeThisRequest> {
         out.writeVInt(minWordLength);
         out.writeVInt(maxWordLength);
         out.writeFloat(boostTerms);
+        if (out.getVersion().onOrAfter(Version.V_1_2_0)) {
+            out.writeBoolean(include);
+        }
 
         out.writeByte(searchType.id());
         if (searchQueryHint == null) {

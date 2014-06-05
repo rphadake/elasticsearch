@@ -20,13 +20,14 @@
 package org.elasticsearch.index.mapper.object;
 
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
-import org.apache.lucene.document.Field;
+import org.apache.lucene.document.XStringField;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queries.TermFilter;
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.ElasticsearchIllegalStateException;
+import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.joda.FormatDateTimeFormatter;
@@ -156,7 +157,7 @@ public class ObjectMapper implements Mapper, AllFieldMapper.IncludeInAll {
             context.path().pathType(pathType);
             context.path().add(name);
 
-            Map<String, Mapper> mappers = new HashMap<String, Mapper>();
+            Map<String, Mapper> mappers = new HashMap<>();
             for (Mapper.Builder builder : mappersBuilders) {
                 Mapper mapper = builder.build(context);
                 mappers.put(mapper.name(), mapper);
@@ -178,57 +179,81 @@ public class ObjectMapper implements Mapper, AllFieldMapper.IncludeInAll {
     public static class TypeParser implements Mapper.TypeParser {
         @Override
         public Mapper.Builder parse(String name, Map<String, Object> node, ParserContext parserContext) throws MapperParsingException {
-            Map<String, Object> objectNode = node;
             ObjectMapper.Builder builder = createBuilder(name);
+            for (Map.Entry<String, Object> entry : node.entrySet()) {
+                String fieldName = Strings.toUnderscoreCase(entry.getKey());
+                Object fieldNode = entry.getValue();
+                parseObjectOrDocumentTypeProperties(fieldName, fieldNode, parserContext, builder);
+                parseObjectProperties(name, fieldName,  fieldNode,  builder);
+            }
+            parseNested(name, node, builder);
+            return builder;
+        }
 
+        protected static boolean parseObjectOrDocumentTypeProperties(String fieldName, Object fieldNode, ParserContext parserContext, ObjectMapper.Builder builder) {
+            if (fieldName.equals("dynamic")) {
+                String value = fieldNode.toString();
+                if (value.equalsIgnoreCase("strict")) {
+                    builder.dynamic(Dynamic.STRICT);
+                } else {
+                    builder.dynamic(nodeBooleanValue(fieldNode) ? Dynamic.TRUE : Dynamic.FALSE);
+                }
+                return true;
+            } else if (fieldName.equals("enabled")) {
+                builder.enabled(nodeBooleanValue(fieldNode));
+                return true;
+            } else if (fieldName.equals("properties")) {
+                if (fieldNode instanceof Collection && ((Collection) fieldNode).isEmpty()) {
+                    // nothing to do here, empty (to support "properties: []" case)
+                } else if (!(fieldNode instanceof Map)) {
+                    throw new ElasticsearchParseException("properties must be a map type");
+                } else {
+                    parseProperties(builder, (Map<String, Object>) fieldNode, parserContext);
+                }
+                return true;
+            } else if (fieldName.equals("include_in_all")) {
+                builder.includeInAll(nodeBooleanValue(fieldNode));
+                return true;
+            }
+            return false;
+        }
+
+        protected static void parseObjectProperties(String name, String fieldName, Object fieldNode, ObjectMapper.Builder builder) {
+           if (fieldName.equals("path")) {
+                builder.pathType(parsePathType(name, fieldNode.toString()));
+            }
+        }
+
+        protected static void parseNested(String name, Map<String, Object> node, ObjectMapper.Builder builder) {
             boolean nested = false;
             boolean nestedIncludeInParent = false;
             boolean nestedIncludeInRoot = false;
-            for (Map.Entry<String, Object> entry : objectNode.entrySet()) {
-                String fieldName = Strings.toUnderscoreCase(entry.getKey());
-                Object fieldNode = entry.getValue();
-
-                if (fieldName.equals("dynamic")) {
-                    String value = fieldNode.toString();
-                    if (value.equalsIgnoreCase("strict")) {
-                        builder.dynamic(Dynamic.STRICT);
-                    } else {
-                        builder.dynamic(nodeBooleanValue(fieldNode) ? Dynamic.TRUE : Dynamic.FALSE);
-                    }
-                } else if (fieldName.equals("type")) {
-                    String type = fieldNode.toString();
-                    if (type.equals(CONTENT_TYPE)) {
-                        builder.nested = Nested.NO;
-                    } else if (type.equals(NESTED_CONTENT_TYPE)) {
-                        nested = true;
-                    } else {
-                        throw new MapperParsingException("Trying to parse an object but has a different type [" + type + "] for [" + name + "]");
-                    }
-                } else if (fieldName.equals("include_in_parent")) {
-                    nestedIncludeInParent = nodeBooleanValue(fieldNode);
-                } else if (fieldName.equals("include_in_root")) {
-                    nestedIncludeInRoot = nodeBooleanValue(fieldNode);
-                } else if (fieldName.equals("enabled")) {
-                    builder.enabled(nodeBooleanValue(fieldNode));
-                } else if (fieldName.equals("path")) {
-                    builder.pathType(parsePathType(name, fieldNode.toString()));
-                } else if (fieldName.equals("properties")) {
-                    parseProperties(builder, (Map<String, Object>) fieldNode, parserContext);
-                } else if (fieldName.equals("include_in_all")) {
-                    builder.includeInAll(nodeBooleanValue(fieldNode));
+            Object fieldNode = node.get("type");
+            if (fieldNode!=null) {
+                String type = fieldNode.toString();
+                if (type.equals(CONTENT_TYPE)) {
+                    builder.nested = Nested.NO;
+                } else if (type.equals(NESTED_CONTENT_TYPE)) {
+                    nested = true;
                 } else {
-                    processField(builder, fieldName, fieldNode);
+                    throw new MapperParsingException("Trying to parse an object but has a different type [" + type + "] for [" + name + "]");
                 }
             }
-
+            fieldNode = node.get("include_in_parent");
+            if (fieldNode != null) {
+                nestedIncludeInParent = nodeBooleanValue(fieldNode);
+            }
+            fieldNode = node.get("include_in_root");
+            if (fieldNode != null) {
+                nestedIncludeInRoot = nodeBooleanValue(fieldNode);
+            }
             if (nested) {
                 builder.nested = Nested.newNested(nestedIncludeInParent, nestedIncludeInRoot);
             }
 
-            return builder;
         }
 
-        private void parseProperties(ObjectMapper.Builder objBuilder, Map<String, Object> propsNode, ParserContext parserContext) {
+        protected static void parseProperties(ObjectMapper.Builder objBuilder, Map<String, Object> propsNode, ParserContext parserContext) {
             for (Map.Entry<String, Object> entry : propsNode.entrySet()) {
                 String propName = entry.getKey();
                 Map<String, Object> propNode = (Map<String, Object>) entry.getValue();
@@ -261,10 +286,6 @@ public class ObjectMapper implements Mapper, AllFieldMapper.IncludeInAll {
 
         protected Builder createBuilder(String name) {
             return object(name);
-        }
-
-        protected void processField(Builder builder, String fieldName, Object fieldNode) {
-
         }
     }
 
@@ -432,12 +453,12 @@ public class ObjectMapper implements Mapper, AllFieldMapper.IncludeInAll {
                 // we also rely on this for UidField#loadVersion
 
                 // this is a deeply nested field
-                nestedDoc.add(new Field(UidFieldMapper.NAME, uidField.stringValue(), UidFieldMapper.Defaults.NESTED_FIELD_TYPE));
+                nestedDoc.add(new XStringField(UidFieldMapper.NAME, uidField.stringValue(), UidFieldMapper.Defaults.NESTED_FIELD_TYPE));
             }
             // the type of the nested doc starts with __, so we can identify that its a nested one in filters
             // note, we don't prefix it with the type of the doc since it allows us to execute a nested query
             // across types (for example, with similar nested objects)
-            nestedDoc.add(new Field(TypeFieldMapper.NAME, nestedTypePathAsString, TypeFieldMapper.Defaults.FIELD_TYPE));
+            nestedDoc.add(new XStringField(TypeFieldMapper.NAME, nestedTypePathAsString, TypeFieldMapper.Defaults.FIELD_TYPE));
             restoreDoc = context.switchDoc(nestedDoc);
             context.addDoc(nestedDoc);
         }
@@ -842,7 +863,7 @@ public class ObjectMapper implements Mapper, AllFieldMapper.IncludeInAll {
 
         doMerge(mergeWithObject, mergeContext);
 
-        List<Mapper> mappersToPut = new ArrayList<Mapper>();
+        List<Mapper> mappersToPut = new ArrayList<>();
         FieldMapperListener.Aggregator newFieldMappers = new FieldMapperListener.Aggregator();
         ObjectMapperListener.Aggregator newObjectMappers = new ObjectMapperListener.Aggregator();
         synchronized (mutex) {
@@ -924,7 +945,7 @@ public class ObjectMapper implements Mapper, AllFieldMapper.IncludeInAll {
         doXContent(builder, params);
 
         // sort the mappers so we get consistent serialization format
-        TreeMap<String, Mapper> sortedMappers = new TreeMap<String, Mapper>();
+        TreeMap<String, Mapper> sortedMappers = new TreeMap<>();
         for (ObjectObjectCursor<String, Mapper> cursor : mappers) {
             sortedMappers.put(cursor.key, cursor.value);
         }
@@ -936,7 +957,7 @@ public class ObjectMapper implements Mapper, AllFieldMapper.IncludeInAll {
             }
         }
         if (additionalMappers != null && additionalMappers.length > 0) {
-            TreeMap<String, Mapper> additionalSortedMappers = new TreeMap<String, Mapper>();
+            TreeMap<String, Mapper> additionalSortedMappers = new TreeMap<>();
             for (Mapper mapper : additionalMappers) {
                 additionalSortedMappers.put(mapper.name(), mapper);
             }

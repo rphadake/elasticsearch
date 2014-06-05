@@ -61,6 +61,23 @@ import java.util.Set;
  */
 public class ClusterState implements ToXContent {
 
+    public static enum ClusterStateStatus {
+        UNKNOWN((byte) 0),
+        RECEIVED((byte) 1),
+        BEING_APPLIED((byte) 2),
+        APPLIED((byte) 3);
+
+        private final byte id;
+
+        ClusterStateStatus(byte id) {
+            this.id = id;
+        }
+
+        public byte id() {
+            return this.id;
+        }
+    }
+
     public interface Custom {
 
         interface Factory<T extends Custom> {
@@ -75,7 +92,7 @@ public class ClusterState implements ToXContent {
         }
     }
 
-    public static Map<String, Custom.Factory> customFactories = new HashMap<String, Custom.Factory>();
+    private final static Map<String, Custom.Factory> customFactories = new HashMap<>();
 
     /**
      * Register a custom index meta data factory. Make sure to call it from a static block.
@@ -110,22 +127,37 @@ public class ClusterState implements ToXContent {
 
     private final ImmutableOpenMap<String, Custom> customs;
 
+    private final ClusterName clusterName;
+
     // built on demand
     private volatile RoutingNodes routingNodes;
 
     private SettingsFilter settingsFilter;
 
+    private volatile ClusterStateStatus status;
+
     public ClusterState(long version, ClusterState state) {
-        this(version, state.metaData(), state.routingTable(), state.nodes(), state.blocks(), state.customs());
+        this(state.clusterName, version, state.metaData(), state.routingTable(), state.nodes(), state.blocks(), state.customs());
     }
 
-    public ClusterState(long version, MetaData metaData, RoutingTable routingTable, DiscoveryNodes nodes, ClusterBlocks blocks, ImmutableOpenMap<String, Custom> customs) {
+    public ClusterState(ClusterName clusterName, long version, MetaData metaData, RoutingTable routingTable, DiscoveryNodes nodes, ClusterBlocks blocks, ImmutableOpenMap<String, Custom> customs) {
         this.version = version;
+        this.clusterName = clusterName;
         this.metaData = metaData;
         this.routingTable = routingTable;
         this.nodes = nodes;
         this.blocks = blocks;
         this.customs = customs;
+        this.status = ClusterStateStatus.UNKNOWN;
+    }
+
+    public ClusterStateStatus status() {
+        return status;
+    }
+
+    public ClusterState status(ClusterStateStatus newStatus) {
+        this.status = newStatus;
+        return this;
     }
 
     public long version() {
@@ -184,6 +216,10 @@ public class ClusterState implements ToXContent {
         return this.customs;
     }
 
+    public ClusterName getClusterName() {
+        return this.clusterName;
+    }
+
     /**
      * Returns a built (on demand) routing nodes view of the routing table. <b>NOTE, the routing nodes
      * are mutable, use them just for read operations</b>
@@ -203,6 +239,8 @@ public class ClusterState implements ToXContent {
 
     public String prettyPrint() {
         StringBuilder sb = new StringBuilder();
+        sb.append("version: ").append(version).append("\n");
+        sb.append("meta data version: ").append(metaData.version()).append("\n");
         sb.append(nodes().prettyPrint());
         sb.append(routingTable().prettyPrint());
         sb.append(readOnlyRoutingNodes().prettyPrint());
@@ -420,8 +458,8 @@ public class ClusterState implements ToXContent {
         return builder;
     }
 
-    public static Builder builder() {
-        return new Builder();
+    public static Builder builder(ClusterName clusterName) {
+        return new Builder(clusterName);
     }
 
     public static Builder builder(ClusterState state) {
@@ -430,6 +468,7 @@ public class ClusterState implements ToXContent {
 
     public static class Builder {
 
+        private final ClusterName clusterName;
         private long version = 0;
         private MetaData metaData = MetaData.EMPTY_META_DATA;
         private RoutingTable routingTable = RoutingTable.EMPTY_ROUTING_TABLE;
@@ -437,17 +476,20 @@ public class ClusterState implements ToXContent {
         private ClusterBlocks blocks = ClusterBlocks.EMPTY_CLUSTER_BLOCK;
         private final ImmutableOpenMap.Builder<String, Custom> customs;
 
-        public Builder() {
-            customs = ImmutableOpenMap.builder();
-        }
 
         public Builder(ClusterState state) {
+            this.clusterName = state.clusterName;
             this.version = state.version();
             this.nodes = state.nodes();
             this.routingTable = state.routingTable();
             this.metaData = state.metaData();
             this.blocks = state.blocks();
             this.customs = ImmutableOpenMap.builder(state.customs());
+        }
+
+        public Builder(ClusterName clusterName) {
+            customs = ImmutableOpenMap.builder();
+            this.clusterName = clusterName;
         }
 
         public Builder nodes(DiscoveryNodes.Builder nodesBuilder) {
@@ -486,8 +528,8 @@ public class ClusterState implements ToXContent {
             return blocks(blocksBuilder.build());
         }
 
-        public Builder blocks(ClusterBlocks block) {
-            this.blocks = block;
+        public Builder blocks(ClusterBlocks blocks) {
+            this.blocks = blocks;
             return this;
         }
 
@@ -511,7 +553,7 @@ public class ClusterState implements ToXContent {
         }
 
         public ClusterState build() {
-            return new ClusterState(version, metaData, routingTable, nodes, blocks, customs.build());
+            return new ClusterState(clusterName, version, metaData, routingTable, nodes, blocks, customs.build());
         }
 
         public static byte[] toBytes(ClusterState state) throws IOException {
@@ -525,6 +567,12 @@ public class ClusterState implements ToXContent {
         }
 
         public static void writeTo(ClusterState state, StreamOutput out) throws IOException {
+            if (out.getVersion().onOrAfter(Version.V_1_1_1)) {
+                out.writeBoolean(state.clusterName != null);
+                if (state.clusterName != null) {
+                    state.clusterName.writeTo(out);
+                }
+            }
             out.writeLong(state.version());
             MetaData.Builder.writeTo(state.metaData(), out);
             RoutingTable.Builder.writeTo(state.routingTable(), out);
@@ -542,7 +590,14 @@ public class ClusterState implements ToXContent {
         }
 
         public static ClusterState readFrom(StreamInput in, @Nullable DiscoveryNode localNode) throws IOException {
-            Builder builder = new Builder();
+            ClusterName clusterName = null;
+            if (in.getVersion().onOrAfter(Version.V_1_1_1)) {
+                // it might be null even if it comes from a >= 1.1.1 node since it's origin might be an older node
+                if (in.readBoolean()) {
+                    clusterName = ClusterName.readClusterName(in);
+                }
+            }
+            Builder builder = new Builder(clusterName);
             builder.version = in.readLong();
             builder.metaData = MetaData.Builder.readFrom(in);
             builder.routingTable = RoutingTable.Builder.readFrom(in);

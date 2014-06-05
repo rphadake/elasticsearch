@@ -96,12 +96,17 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
             validationException = addValidationError("id is missing", validationException);
         }
 
-        if (version != Versions.MATCH_ANY && retryOnConflict > 0) {
-            validationException = addValidationError("can't provide both retry_on_conflict and a specific version", validationException);
-        }
+        if (!(versionType == VersionType.INTERNAL || versionType == VersionType.FORCE)) {
+            validationException = addValidationError("version type [" + versionType + "] is not supported by the update API", validationException);
+        } else {
 
-        if (!versionType.validateVersion(version)) {
-            validationException = addValidationError("illegal version value [" + version + "] for version type ["+ versionType.name() + "]", validationException);
+            if (version != Versions.MATCH_ANY && retryOnConflict > 0) {
+                validationException = addValidationError("can't provide both retry_on_conflict and a specific version", validationException);
+            }
+
+            if (!versionType.validateVersionForWrites(version)) {
+                validationException = addValidationError("illegal version value [" + version + "] for version type [" + versionType.name() + "]", validationException);
+            }
         }
 
         if (script == null && doc == null) {
@@ -536,15 +541,14 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
 
     public UpdateRequest source(BytesReference source) throws Exception {
         XContentType xContentType = XContentFactory.xContentType(source);
-        XContentParser parser = XContentFactory.xContent(xContentType).createParser(source);
-        try {
-            XContentParser.Token t = parser.nextToken();
-            if (t == null) {
+        try (XContentParser parser = XContentFactory.xContent(xContentType).createParser(source)) {
+            XContentParser.Token token = parser.nextToken();
+            if (token == null) {
                 return this;
             }
             String currentFieldName = null;
-            while ((t = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
-                if (t == XContentParser.Token.FIELD_NAME) {
+            while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
+                if (token == XContentParser.Token.FIELD_NAME) {
                     currentFieldName = parser.currentName();
                 } else if ("script".equals(currentFieldName)) {
                     script = parser.textOrNull();
@@ -564,8 +568,6 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
                     docAsUpsert(parser.booleanValue());
                 }
             }
-        } finally {
-            parser.close();
         }
         return this;
     }
@@ -607,7 +609,7 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
             upsertRequest.readFrom(in);
         }
         docAsUpsert = in.readBoolean();
-        version = in.readLong();
+        version = Versions.readVersion(in);
         versionType = VersionType.fromValue(in.readByte());
     }
 
@@ -653,7 +655,7 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest> 
             upsertRequest.writeTo(out);
         }
         out.writeBoolean(docAsUpsert);
-        out.writeLong(version);
+        Versions.writeVersion(version, out);
         out.writeByte(versionType.getValue());
     }
 

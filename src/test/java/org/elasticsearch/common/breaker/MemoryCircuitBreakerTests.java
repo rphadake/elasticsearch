@@ -39,7 +39,7 @@ public class MemoryCircuitBreakerTests extends ElasticsearchTestCase {
         final int BYTES_PER_THREAD = 1000;
         final Thread[] threads = new Thread[NUM_THREADS];
         final AtomicBoolean tripped = new AtomicBoolean(false);
-        final AtomicReference<Throwable> lastException = new AtomicReference<Throwable>(null);
+        final AtomicReference<Throwable> lastException = new AtomicReference<>(null);
 
         final MemoryCircuitBreaker breaker = new MemoryCircuitBreaker(new ByteSizeValue((BYTES_PER_THREAD * NUM_THREADS) - 1), 1.0, logger);
 
@@ -49,7 +49,7 @@ public class MemoryCircuitBreakerTests extends ElasticsearchTestCase {
                 public void run() {
                     for (int j = 0; j < BYTES_PER_THREAD; j++) {
                         try {
-                            breaker.addEstimateBytesAndMaybeBreak(1L);
+                            breaker.addEstimateBytesAndMaybeBreak(1L, "test");
                         } catch (CircuitBreakingException e) {
                             if (tripped.get()) {
                                 assertThat("tripped too many times", true, equalTo(false));
@@ -72,24 +72,26 @@ public class MemoryCircuitBreakerTests extends ElasticsearchTestCase {
 
         assertThat("no other exceptions were thrown", lastException.get(), equalTo(null));
         assertThat("breaker was tripped exactly once", tripped.get(), equalTo(true));
+        assertThat("breaker was tripped exactly once", breaker.getTrippedCount(), equalTo(1L));
     }
 
     @Test
     public void testConstantFactor() throws Exception {
         final MemoryCircuitBreaker breaker = new MemoryCircuitBreaker(new ByteSizeValue(15), 1.6, logger);
+        String field = "myfield";
 
         // add only 7 bytes
         breaker.addWithoutBreaking(7);
 
         try {
             // this won't actually add it because it trips the breaker
-            breaker.addEstimateBytesAndMaybeBreak(3);
+            breaker.addEstimateBytesAndMaybeBreak(3, field);
             fail("should never reach this");
         } catch (CircuitBreakingException cbe) {
         }
 
         // shouldn't throw an exception
-        breaker.addEstimateBytesAndMaybeBreak(2);
+        breaker.addEstimateBytesAndMaybeBreak(2, field);
 
         assertThat(breaker.getUsed(), equalTo(9L));
 
@@ -98,9 +100,11 @@ public class MemoryCircuitBreakerTests extends ElasticsearchTestCase {
 
         try {
             // Adding no bytes still breaks
-            breaker.addEstimateBytesAndMaybeBreak(0);
+            breaker.addEstimateBytesAndMaybeBreak(0, field);
             fail("should never reach this");
         } catch (CircuitBreakingException cbe) {
+            assertThat("breaker was tripped exactly twice", breaker.getTrippedCount(), equalTo(2L));
+            assertThat(cbe.getMessage().contains("field [" + field + "]"), equalTo(true));
         }
     }
 }

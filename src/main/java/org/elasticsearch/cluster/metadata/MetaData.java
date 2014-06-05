@@ -78,13 +78,14 @@ public class MetaData implements Iterable<IndexMetaData> {
         }
     }
 
-    public static Map<String, Custom.Factory> customFactories = new HashMap<String, Custom.Factory>();
+    public static Map<String, Custom.Factory> customFactories = new HashMap<>();
 
     static {
         // register non plugin custom metadata
         registerFactory(RepositoriesMetaData.TYPE, RepositoriesMetaData.FACTORY);
         registerFactory(SnapshotMetaData.TYPE, SnapshotMetaData.FACTORY);
         registerFactory(RestoreMetaData.TYPE, RestoreMetaData.FACTORY);
+        registerFactory(BenchmarkMetaData.TYPE, BenchmarkMetaData.FACTORY);
     }
 
     /**
@@ -110,11 +111,13 @@ public class MetaData implements Iterable<IndexMetaData> {
 
     public static final String SETTING_READ_ONLY = "cluster.blocks.read_only";
 
-    public static final ClusterBlock CLUSTER_READ_ONLY_BLOCK = new ClusterBlock(6, "cluster read-only (api)", false, false, RestStatus.FORBIDDEN, ClusterBlockLevel.WRITE, ClusterBlockLevel.METADATA);
+    public static final ClusterBlock CLUSTER_READ_ONLY_BLOCK = new ClusterBlock(6, "cluster read-only (api)", false, false, RestStatus.FORBIDDEN, EnumSet.of(ClusterBlockLevel.WRITE, ClusterBlockLevel.METADATA));
 
     public static final MetaData EMPTY_META_DATA = builder().build();
 
-    public static final String GLOBAL_PERSISTENT_ONLY_PARAM = "global_persistent_only";
+    public static final String GLOBAL_ONLY_PARAM = "global_only";
+
+    public static final String PERSISTENT_ONLY_PARAM = "persistent_only";
 
     private final String uuid;
     private final long version;
@@ -208,7 +211,7 @@ public class MetaData implements Iterable<IndexMetaData> {
             IndexMetaData indexMetaData = cursor.value;
             ObjectArrayList<String> indicesLst = (ObjectArrayList<String>) aliasAndIndexToIndexMap.get(indexMetaData.index());
             if (indicesLst == null) {
-                indicesLst = new ObjectArrayList<String>();
+                indicesLst = new ObjectArrayList<>();
                 aliasAndIndexToIndexMap.put(indexMetaData.index(), indicesLst);
             }
             indicesLst.add(indexMetaData.index());
@@ -217,7 +220,7 @@ public class MetaData implements Iterable<IndexMetaData> {
                 String alias = cursor1.value;
                 indicesLst = (ObjectArrayList<String>) aliasAndIndexToIndexMap.get(alias);
                 if (indicesLst == null) {
-                    indicesLst = new ObjectArrayList<String>();
+                    indicesLst = new ObjectArrayList<>();
                     aliasAndIndexToIndexMap.put(alias, indicesLst);
                 }
                 indicesLst.add(indexMetaData.index());
@@ -473,7 +476,7 @@ public class MetaData implements Iterable<IndexMetaData> {
     }
 
     public Map<String, Set<String>> resolveSearchRouting(@Nullable String routing, String aliasOrIndex) {
-        return resolveSearchRouting(routing, convertFromWildcards(new String[]{aliasOrIndex}, IndicesOptions.lenient()));
+        return resolveSearchRouting(routing, convertFromWildcards(new String[]{aliasOrIndex}, IndicesOptions.lenientExpandOpen()));
     }
 
     public Map<String, Set<String>> resolveSearchRouting(@Nullable String routing, String[] aliasesOrIndices) {
@@ -481,7 +484,7 @@ public class MetaData implements Iterable<IndexMetaData> {
             return resolveSearchRoutingAllIndices(routing);
         }
 
-        aliasesOrIndices = convertFromWildcards(aliasesOrIndices, IndicesOptions.lenient());
+        aliasesOrIndices = convertFromWildcards(aliasesOrIndices, IndicesOptions.lenientExpandOpen());
 
         if (aliasesOrIndices.length == 1) {
             return resolveSearchRoutingSingleValue(routing, aliasesOrIndices[0]);
@@ -490,7 +493,7 @@ public class MetaData implements Iterable<IndexMetaData> {
         Map<String, Set<String>> routings = null;
         Set<String> paramRouting = null;
         // List of indices that don't require any routing
-        Set<String> norouting = new HashSet<String>();
+        Set<String> norouting = new HashSet<>();
         if (routing != null) {
             paramRouting = Strings.splitStringByCommaToSet(routing);
         }
@@ -507,7 +510,7 @@ public class MetaData implements Iterable<IndexMetaData> {
                             }
                             Set<String> r = routings.get(indexRouting.key);
                             if (r == null) {
-                                r = new HashSet<String>();
+                                r = new HashSet<>();
                                 routings.put(indexRouting.key, r);
                             }
                             r.addAll(indexRouting.value.searchRoutingValues());
@@ -522,7 +525,7 @@ public class MetaData implements Iterable<IndexMetaData> {
                             if (!norouting.contains(indexRouting.key)) {
                                 norouting.add(indexRouting.key);
                                 if (paramRouting != null) {
-                                    Set<String> r = new HashSet<String>(paramRouting);
+                                    Set<String> r = new HashSet<>(paramRouting);
                                     if (routings == null) {
                                         routings = newHashMap();
                                     }
@@ -541,7 +544,7 @@ public class MetaData implements Iterable<IndexMetaData> {
                 if (!norouting.contains(aliasOrIndex)) {
                     norouting.add(aliasOrIndex);
                     if (paramRouting != null) {
-                        Set<String> r = new HashSet<String>(paramRouting);
+                        Set<String> r = new HashSet<>(paramRouting);
                         if (routings == null) {
                             routings = newHashMap();
                         }
@@ -574,7 +577,7 @@ public class MetaData implements Iterable<IndexMetaData> {
             for (ObjectObjectCursor<String, AliasMetaData> indexRouting : indexToRoutingMap) {
                 if (!indexRouting.value.searchRoutingValues().isEmpty()) {
                     // Routing alias
-                    Set<String> r = new HashSet<String>(indexRouting.value.searchRoutingValues());
+                    Set<String> r = new HashSet<>(indexRouting.value.searchRoutingValues());
                     if (paramRouting != null) {
                         r.retainAll(paramRouting);
                     }
@@ -587,7 +590,7 @@ public class MetaData implements Iterable<IndexMetaData> {
                 } else {
                     // Non-routing alias
                     if (paramRouting != null) {
-                        Set<String> r = new HashSet<String>(paramRouting);
+                        Set<String> r = new HashSet<>(paramRouting);
                         if (routings == null) {
                             routings = newHashMap();
                         }
@@ -621,59 +624,44 @@ public class MetaData implements Iterable<IndexMetaData> {
     }
 
     /**
-     * Translates the provided indices (possibly aliased) into actual indices.
+     * Translates the provided indices or aliases, eventually containing wildcard expressions, into actual indices.
+     * @param indicesOptions how the aliases or indices need to be resolved to concrete indices
+     * @param aliasesOrIndices the aliases or indices to be resolved to concrete indices
+     * @return the obtained concrete indices
+     * @throws IndexMissingException if one of the aliases or indices is missing and the provided indices options
+     * don't allow such a case, or if the final result of the indices resolution is no indices and the indices options
+     * don't allow such a case.
+     * @throws ElasticsearchIllegalArgumentException if one of the aliases resolve to multiple indices and the provided
+     * indices options don't allow such a case.
      */
-    public String[] concreteIndices(String[] indices) throws IndexMissingException {
-        return concreteIndices(indices, IndicesOptions.fromOptions(false, true, true, true));
-    }
+    public String[] concreteIndices(IndicesOptions indicesOptions, String... aliasesOrIndices) throws IndexMissingException, ElasticsearchIllegalArgumentException {
 
-    /**
-     * Translates the provided indices (possibly aliased) into actual indices.
-     */
-    public String[] concreteIndicesIgnoreMissing(String[] indices) {
-        return concreteIndices(indices, IndicesOptions.fromOptions(true, true, true, false));
-    }
+        if (indicesOptions.expandWildcardsOpen() || indicesOptions.expandWildcardsClosed()) {
+            if (isAllIndices(aliasesOrIndices)) {
+                String[] concreteIndices;
+                if (indicesOptions.expandWildcardsOpen() && indicesOptions.expandWildcardsClosed()) {
+                    concreteIndices = concreteAllIndices();
+                } else if (indicesOptions.expandWildcardsOpen()) {
+                    concreteIndices = concreteAllOpenIndices();
+                } else {
+                    concreteIndices = concreteAllClosedIndices();
+                }
 
-    /**
-     * Translates the provided indices (possibly aliased) into actual indices.
-     */
-    public String[] concreteIndices(String[] aliasesOrIndices, IndicesOptions indicesOptions) throws IndexMissingException {
-        if (isAllIndices(aliasesOrIndices)) {
-            String[] concreteIndices;
-            if (indicesOptions.expandWildcardsOpen() && indicesOptions.expandWildcardsClosed()) {
-                concreteIndices = concreteAllIndices();
-            } else if (indicesOptions.expandWildcardsOpen()) {
-                concreteIndices = concreteAllOpenIndices();
-            } else if (indicesOptions.expandWildcardsClosed()) {
-                concreteIndices = concreteAllClosedIndices();
-            } else {
-                assert false : "Shouldn't end up here";
-                concreteIndices = Strings.EMPTY_ARRAY;
+                if (!indicesOptions.allowNoIndices() && concreteIndices.length == 0) {
+                    throw new IndexMissingException(new Index("_all"));
+                }
+                return concreteIndices;
             }
 
-            if (!indicesOptions.allowNoIndices() && concreteIndices.length == 0) {
-                throw new IndexMissingException(new Index("_all"));
-            }
-            return concreteIndices;
+            aliasesOrIndices = convertFromWildcards(aliasesOrIndices, indicesOptions);
         }
-        aliasesOrIndices = convertFromWildcards(aliasesOrIndices, indicesOptions);
+
         // optimize for single element index (common case)
         if (aliasesOrIndices.length == 1) {
-            String aliasOrIndex = aliasesOrIndices[0];
-            // if a direct index name, just return the array provided
-            if (this.indices.containsKey(aliasOrIndex)) {
-                return aliasesOrIndices;
-            }
-            String[] actualLst = aliasAndIndexToIndexMap.getOrDefault(aliasOrIndex, Strings.EMPTY_ARRAY);
-            if (!indicesOptions.allowNoIndices() && actualLst == null) {
-                throw new IndexMissingException(new Index(aliasOrIndex));
-            } else {
-                return actualLst;
-            }
+            return concreteIndices(aliasesOrIndices[0], indicesOptions.allowNoIndices(), indicesOptions.allowAliasesToMultipleIndices());
         }
 
-        // check if its a possible aliased index, if not, just return the
-        // passed array
+        // check if its a possible aliased index, if not, just return the passed array
         boolean possiblyAliased = false;
         for (String index : aliasesOrIndices) {
             if (!this.indices.containsKey(index)) {
@@ -685,18 +673,10 @@ public class MetaData implements Iterable<IndexMetaData> {
             return aliasesOrIndices;
         }
 
-        Set<String> actualIndices = new HashSet<String>();
-        for (String index : aliasesOrIndices) {
-            String[] actualLst = aliasAndIndexToIndexMap.get(index);
-            if (actualLst == null) {
-                if (!indicesOptions.ignoreUnavailable()) {
-                    throw new IndexMissingException(new Index(index));
-                }
-            } else {
-                for (String x : actualLst) {
-                    actualIndices.add(x);
-                }
-            }
+        Set<String> actualIndices = new HashSet<>();
+        for (String aliasOrIndex : aliasesOrIndices) {
+            String[] indices = concreteIndices(aliasOrIndex, indicesOptions.ignoreUnavailable(), indicesOptions.allowAliasesToMultipleIndices());
+            Collections.addAll(actualIndices, indices);
         }
 
         if (!indicesOptions.allowNoIndices() && actualIndices.isEmpty()) {
@@ -705,20 +685,26 @@ public class MetaData implements Iterable<IndexMetaData> {
         return actualIndices.toArray(new String[actualIndices.size()]);
     }
 
-    public String concreteIndex(String index) throws IndexMissingException, ElasticsearchIllegalArgumentException {
+    public String concreteSingleIndex(String indexOrAlias) throws IndexMissingException, ElasticsearchIllegalArgumentException {
+        String[] indices = concreteIndices(IndicesOptions.strictSingleIndexNoExpand(), indexOrAlias);
+        assert indices.length == 1 : "expected an exception to be thrown otherwise";
+        return indices[0];
+    }
+
+    private String[] concreteIndices(String aliasOrIndex, boolean allowNoIndices, boolean allowMultipleIndices) throws IndexMissingException, ElasticsearchIllegalArgumentException {
         // a quick check, if this is an actual index, if so, return it
-        if (indices.containsKey(index)) {
-            return index;
+        if (indices.containsKey(aliasOrIndex)) {
+            return new String[]{aliasOrIndex};
         }
         // not an actual index, fetch from an alias
-        String[] lst = aliasAndIndexToIndexMap.get(index);
-        if (lst == null) {
-            throw new IndexMissingException(new Index(index));
+        String[] indices = aliasAndIndexToIndexMap.getOrDefault(aliasOrIndex, Strings.EMPTY_ARRAY);
+        if (indices.length == 0 && !allowNoIndices) {
+            throw new IndexMissingException(new Index(aliasOrIndex));
         }
-        if (lst.length > 1) {
-            throw new ElasticsearchIllegalArgumentException("Alias [" + index + "] has more than one indices associated with it [" + Arrays.toString(lst) + "], can't execute a single index op");
+        if (indices.length > 1 && !allowMultipleIndices) {
+            throw new ElasticsearchIllegalArgumentException("Alias [" + aliasOrIndex + "] has more than one indices associated with it [" + Arrays.toString(indices) + "], can't execute a single index op");
         }
-        return lst[0];
+        return indices;
     }
 
     /**
@@ -743,7 +729,7 @@ public class MetaData implements Iterable<IndexMetaData> {
             if (aliasOrIndex.charAt(0) == '+') {
                 // if its the first, add empty result set
                 if (i == 0) {
-                    result = new HashSet<String>();
+                    result = new HashSet<>();
                 }
                 add = true;
                 aliasOrIndex = aliasOrIndex.substring(1);
@@ -761,7 +747,7 @@ public class MetaData implements Iterable<IndexMetaData> {
                         assert false : "Shouldn't end up here";
                         concreteIndices = Strings.EMPTY_ARRAY;
                     }
-                    result = new HashSet<String>(Arrays.asList(concreteIndices));
+                    result = new HashSet<>(Arrays.asList(concreteIndices));
                 }
                 add = false;
                 aliasOrIndex = aliasOrIndex.substring(1);
@@ -781,7 +767,7 @@ public class MetaData implements Iterable<IndexMetaData> {
             }
             if (result == null) {
                 // add all the previous ones...
-                result = new HashSet<String>();
+                result = new HashSet<>();
                 result.addAll(Arrays.asList(aliasesOrIndices).subList(0, i));
             }
             String[] indices;
@@ -792,7 +778,7 @@ public class MetaData implements Iterable<IndexMetaData> {
             } else if (indicesOptions.expandWildcardsClosed()) {
                 indices = concreteAllClosedIndices();
             } else {
-                assert false : "Shouldn't end up here";
+                assert false : "convertFromWildcards shouldn't get called if wildcards expansion is disabled";
                 indices = Strings.EMPTY_ARRAY;
             }
             boolean found = false;
@@ -898,7 +884,7 @@ public class MetaData implements Iterable<IndexMetaData> {
      */
     public String[] filteringAliases(String index, String... indicesOrAliases) {
         // expand the aliases wildcard
-        indicesOrAliases = convertFromWildcards(indicesOrAliases, IndicesOptions.lenient());
+        indicesOrAliases = convertFromWildcards(indicesOrAliases, IndicesOptions.lenientExpandOpen());
 
         if (isAllIndices(indicesOrAliases)) {
             return null;
@@ -1045,7 +1031,7 @@ public class MetaData implements Iterable<IndexMetaData> {
         int customCount1 = 0;
         for (ObjectObjectCursor<String, Custom> cursor : metaData1.customs) {
             if (customFactories.get(cursor.key).isPersistent()) {
-                if (!cursor.equals(metaData2.custom(cursor.key))) return false;
+                if (!cursor.value.equals(metaData2.custom(cursor.key))) return false;
                 customCount1++;
             }
         }
@@ -1230,7 +1216,8 @@ public class MetaData implements Iterable<IndexMetaData> {
         }
 
         public static void toXContent(MetaData metaData, XContentBuilder builder, ToXContent.Params params) throws IOException {
-            boolean globalPersistentOnly = params.paramAsBoolean(GLOBAL_PERSISTENT_ONLY_PARAM, false);
+            boolean globalOnly = params.paramAsBoolean(GLOBAL_ONLY_PARAM, false);
+            boolean persistentOnly = params.paramAsBoolean(PERSISTENT_ONLY_PARAM, false);
             builder.startObject("meta-data");
 
             builder.field("version", metaData.version());
@@ -1244,7 +1231,7 @@ public class MetaData implements Iterable<IndexMetaData> {
                 builder.endObject();
             }
 
-            if (!globalPersistentOnly && !metaData.transientSettings().getAsMap().isEmpty()) {
+            if (!persistentOnly && !metaData.transientSettings().getAsMap().isEmpty()) {
                 builder.startObject("transient_settings");
                 for (Map.Entry<String, String> entry : metaData.transientSettings().getAsMap().entrySet()) {
                     builder.field(entry.getKey(), entry.getValue());
@@ -1258,7 +1245,7 @@ public class MetaData implements Iterable<IndexMetaData> {
             }
             builder.endObject();
 
-            if (!globalPersistentOnly && !metaData.indices().isEmpty()) {
+            if (!globalOnly && !metaData.indices().isEmpty()) {
                 builder.startObject("indices");
                 for (IndexMetaData indexMetaData : metaData) {
                     IndexMetaData.Builder.toXContent(indexMetaData, builder, params);
@@ -1268,7 +1255,7 @@ public class MetaData implements Iterable<IndexMetaData> {
 
             for (ObjectObjectCursor<String, Custom> cursor : metaData.customs()) {
                 Custom.Factory factory = lookupFactorySafe(cursor.key);
-                if (!globalPersistentOnly || factory.isPersistent()) {
+                if (!persistentOnly || factory.isPersistent()) {
                     builder.startObject(cursor.key);
                     factory.toXContent(cursor.value, builder, params);
                     builder.endObject();

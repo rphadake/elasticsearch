@@ -27,7 +27,7 @@ import org.apache.lucene.analysis.AnalyzerWrapper;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queries.FilterClause;
 import org.apache.lucene.queries.TermFilter;
-import org.apache.lucene.queries.XTermsFilter;
+import org.apache.lucene.queries.TermsFilter;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.util.BytesRef;
@@ -109,7 +109,7 @@ public class MapperService extends AbstractIndexComponent implements Iterable<Do
     private final SmartIndexNameSearchAnalyzer searchAnalyzer;
     private final SmartIndexNameSearchQuoteAnalyzer searchQuoteAnalyzer;
 
-    private final List<DocumentTypeListener> typeListeners = new CopyOnWriteArrayList<DocumentTypeListener>();
+    private final List<DocumentTypeListener> typeListeners = new CopyOnWriteArrayList<>();
 
     @Inject
     public MapperService(Index index, @IndexSettings Settings indexSettings, Environment environment, AnalysisService analysisService, IndexFieldDataService fieldDataService,
@@ -476,7 +476,7 @@ public class MapperService extends AbstractIndexComponent implements Iterable<Do
             for (int i = 0; i < typesBytes.length; i++) {
                 typesBytes[i] = new BytesRef(types[i]);
             }
-            XTermsFilter termsFilter = new XTermsFilter(TypeFieldMapper.NAME, typesBytes);
+            TermsFilter termsFilter = new TermsFilter(TypeFieldMapper.NAME, typesBytes);
             if (filterPercolateType) {
                 return new AndFilter(ImmutableList.of(excludePercolatorType, termsFilter));
             } else {
@@ -828,7 +828,8 @@ public class MapperService extends AbstractIndexComponent implements Iterable<Do
                 String objectPath = fieldName.substring(0, indexOf);
                 ObjectMappers objectMappers = objectMapper(objectPath);
                 if (objectMappers == null) {
-                    return null;
+                    indexOf = objectPath.lastIndexOf('.');
+                    continue;
                 }
 
                 if (objectMappers.hasNested()) {

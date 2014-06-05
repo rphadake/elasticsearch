@@ -75,6 +75,13 @@ public final class HyperLogLogPlusPlus implements Releasable {
         return precision;
     }
 
+    /**
+     * Return the expected per-bucket memory usage for the given precision.
+     */
+    public static long memoryUsage(int precision) {
+        return 1L << precision;
+    }
+
     // these static tables come from the appendix of the paper
     private static final double[][] RAW_ESTIMATE_DATA = {
         // precision 4
@@ -200,7 +207,7 @@ public final class HyperLogLogPlusPlus implements Releasable {
                     }
                 }
             } finally {
-                Releasables.release(values);
+                Releasables.close(values);
             }
         } else {
             if (algorithm.get(thisBucket) != HYPERLOGLOG) {
@@ -302,7 +309,7 @@ public final class HyperLogLogPlusPlus implements Releasable {
             }
             algorithm.set(bucket);
         } finally {
-            Releasables.release(values);
+            Releasables.close(values);
         }
     }
 
@@ -395,9 +402,8 @@ public final class HyperLogLogPlusPlus implements Releasable {
     }
 
     @Override
-    public boolean release() throws ElasticsearchException {
-        Releasables.release(runLens, hashSet.sizes);
-        return true;
+    public void close() throws ElasticsearchException {
+        Releasables.close(runLens, hashSet.sizes);
     }
 
     /**
@@ -499,16 +505,11 @@ public final class HyperLogLogPlusPlus implements Releasable {
         out.writeVInt(p);
         if (algorithm.get(bucket) == LINEAR_COUNTING) {
             out.writeBoolean(LINEAR_COUNTING);
-            final IntArray hashes = hashSet.values(bucket);
-            boolean success = false;
-            try {
+            try (IntArray hashes = hashSet.values(bucket)) {
                 out.writeVLong(hashes.size());
                 for (long i = 0; i < hashes.size(); ++i) {
                     out.writeInt(hashes.get(i));
                 }
-                success = true;
-            } finally {
-                Releasables.release(success, hashes);
             }
         } else {
             out.writeBoolean(HYPERLOGLOG);

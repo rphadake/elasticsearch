@@ -60,9 +60,9 @@ public class TransportMultiTermVectorsAction extends TransportAction<MultiTermVe
 
         clusterState.blocks().globalBlockedRaiseException(ClusterBlockLevel.READ);
 
-        final AtomicArray<MultiTermVectorsItemResponse> responses = new AtomicArray<MultiTermVectorsItemResponse>(request.requests.size());
+        final AtomicArray<MultiTermVectorsItemResponse> responses = new AtomicArray<>(request.requests.size());
 
-        Map<ShardId, MultiTermVectorsShardRequest> shardRequests = new HashMap<ShardId, MultiTermVectorsShardRequest>();
+        Map<ShardId, MultiTermVectorsShardRequest> shardRequests = new HashMap<>();
         for (int i = 0; i < request.requests.size(); i++) {
             TermVectorRequest termVectorRequest = request.requests.get(i);
             termVectorRequest.routing(clusterState.metaData().resolveIndexRouting(termVectorRequest.routing(), termVectorRequest.index()));
@@ -76,7 +76,7 @@ public class TransportMultiTermVectorsAction extends TransportAction<MultiTermVe
                         termVectorRequest.type(), termVectorRequest.id(), "routing is required, but hasn't been specified")));
                 continue;
             }
-            termVectorRequest.index(clusterState.metaData().concreteIndex(termVectorRequest.index()));
+            termVectorRequest.index(clusterState.metaData().concreteSingleIndex(termVectorRequest.index()));
             ShardId shardId = clusterService
                     .operationRouting()
                     .getShards(clusterState, termVectorRequest.index(), termVectorRequest.type(), termVectorRequest.id(),

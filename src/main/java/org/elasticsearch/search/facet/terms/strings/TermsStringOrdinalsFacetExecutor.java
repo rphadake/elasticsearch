@@ -93,7 +93,7 @@ public class TermsStringOrdinalsFacetExecutor extends FacetExecutor {
         this.cacheRecycler = context.cacheRecycler();
         this.bigArrays = context.bigArrays();
 
-        this.aggregators = new ArrayList<ReaderAggregator>(context.searcher().getIndexReader().leaves().size());
+        this.aggregators = new ArrayList<>(context.searcher().getIndexReader().leaves().size());
     }
 
     @Override
@@ -151,12 +151,12 @@ public class TermsStringOrdinalsFacetExecutor extends FacetExecutor {
                 list[i] = (InternalStringTermsFacet.TermEntry) ordered.pop();
             }
 
-            Releasables.release(aggregators);
+            Releasables.close(aggregators);
 
             return new InternalStringTermsFacet(facetName, comparatorType, size, Arrays.asList(list), missing, total);
         }
 
-        BoundedTreeSet<InternalStringTermsFacet.TermEntry> ordered = new BoundedTreeSet<InternalStringTermsFacet.TermEntry>(comparatorType.comparator(), shardSize);
+        BoundedTreeSet<InternalStringTermsFacet.TermEntry> ordered = new BoundedTreeSet<>(comparatorType.comparator(), shardSize);
 
         while (queue.size() > 0) {
             ReaderAggregator agg = queue.top();
@@ -189,7 +189,7 @@ public class TermsStringOrdinalsFacetExecutor extends FacetExecutor {
             }
         }
 
-        Releasables.release(aggregators);
+        Releasables.close(aggregators);
 
         return new InternalStringTermsFacet(facetName, comparatorType, size, ordered, missing, total);
     }
@@ -205,12 +205,12 @@ public class TermsStringOrdinalsFacetExecutor extends FacetExecutor {
         @Override
         public void setNextReader(AtomicReaderContext context) throws IOException {
             if (current != null) {
-                missing += current.counts.get(0);
-                total += current.total - current.counts.get(0);
-                if (current.values.ordinals().getNumOrds() > 0) {
+                missing += current.missing;
+                total += current.total;
+                if (current.values.ordinals().getMaxOrd() > Ordinals.MIN_ORDINAL) {
                     aggregators.add(current);
                 } else {
-                    Releasables.release(current);
+                    Releasables.close(current);
                 }
             }
             values = indexFieldData.load(context).getBytesValues(false);
@@ -232,13 +232,13 @@ public class TermsStringOrdinalsFacetExecutor extends FacetExecutor {
         @Override
         public void postCollection() {
             if (current != null) {
-                missing += current.counts.get(0);
-                total += current.total - current.counts.get(0);
+                missing += current.missing;
+                total += current.total;
                 // if we have values for this one, add it
-                if (current.values.ordinals().getNumOrds() > 0) {
+                if (current.values.ordinals().getMaxOrd() > Ordinals.MIN_ORDINAL) {
                     aggregators.add(current);
                 } else {
-                    Releasables.release(current);
+                    Releasables.close(current);
                 }
                 current = null;
             }
@@ -253,7 +253,8 @@ public class TermsStringOrdinalsFacetExecutor extends FacetExecutor {
 
         final BytesValues.WithOrdinals values;
         final IntArray counts;
-        long position = 0;
+        int missing = 0;
+        long position = Ordinals.MIN_ORDINAL - 1;
         BytesRef current;
         int total;
 
@@ -270,8 +271,7 @@ public class TermsStringOrdinalsFacetExecutor extends FacetExecutor {
         }
 
         final void incrementMissing(int numMissing) {
-            counts.increment(0, numMissing);
-            total += numMissing;
+            missing += numMissing;
         }
 
         public boolean nextPosition() {
@@ -287,9 +287,8 @@ public class TermsStringOrdinalsFacetExecutor extends FacetExecutor {
         }
 
         @Override
-        public boolean release() {
-            Releasables.release(counts);
-            return true;
+        public void close() {
+            Releasables.close(counts);
         }
 
     }

@@ -93,8 +93,7 @@ public class TransportShardDeleteAction extends TransportShardReplicationOperati
     protected PrimaryResponse<ShardDeleteResponse, ShardDeleteRequest> shardOperationOnPrimary(ClusterState clusterState, PrimaryOperationRequest shardRequest) {
         ShardDeleteRequest request = shardRequest.request;
         IndexShard indexShard = indicesService.indexServiceSafe(shardRequest.request.index()).shardSafe(shardRequest.shardId);
-        Engine.Delete delete = indexShard.prepareDelete(request.type(), request.id(), request.version())
-                .origin(Engine.Operation.Origin.PRIMARY);
+        Engine.Delete delete = indexShard.prepareDelete(request.type(), request.id(), request.version(), VersionType.INTERNAL, Engine.Operation.Origin.PRIMARY);
         indexShard.delete(delete);
         // update the version to happen on the replicas
         request.version(delete.version());
@@ -109,20 +108,19 @@ public class TransportShardDeleteAction extends TransportShardReplicationOperati
 
 
         ShardDeleteResponse response = new ShardDeleteResponse(delete.version(), delete.found());
-        return new PrimaryResponse<ShardDeleteResponse, ShardDeleteRequest>(shardRequest.request, response, null);
+        return new PrimaryResponse<>(shardRequest.request, response, null);
     }
 
     @Override
     protected void shardOperationOnReplica(ReplicaOperationRequest shardRequest) {
         ShardDeleteRequest request = shardRequest.request;
         IndexShard indexShard = indicesService.indexServiceSafe(shardRequest.request.index()).shardSafe(shardRequest.shardId);
-        Engine.Delete delete = indexShard.prepareDelete(request.type(), request.id(), request.version())
-                .origin(Engine.Operation.Origin.REPLICA);
+        Engine.Delete delete = indexShard.prepareDelete(request.type(), request.id(), request.version(), VersionType.INTERNAL, Engine.Operation.Origin.REPLICA);
 
         // IndexDeleteAction doesn't support version type at the moment. Hard coded for the INTERNAL version
-        delete.versionType(VersionType.INTERNAL.versionTypeForReplicationAndRecovery());
+        delete = new Engine.Delete(delete, VersionType.INTERNAL.versionTypeForReplicationAndRecovery());
 
-        assert delete.versionType().validateVersion(delete.version());
+        assert delete.versionType().validateVersionForWrites(delete.version());
 
         indexShard.delete(delete);
 

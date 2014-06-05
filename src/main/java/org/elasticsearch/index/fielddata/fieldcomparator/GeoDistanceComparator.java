@@ -26,6 +26,7 @@ import org.elasticsearch.common.geo.GeoPoint;
 import org.elasticsearch.common.unit.DistanceUnit;
 import org.elasticsearch.index.fielddata.GeoPointValues;
 import org.elasticsearch.index.fielddata.IndexGeoPointFieldData;
+import org.elasticsearch.search.MultiValueMode;
 
 import java.io.IOException;
 
@@ -40,7 +41,7 @@ public class GeoDistanceComparator extends NumberComparatorBase<Double> {
     protected final DistanceUnit unit;
     protected final GeoDistance geoDistance;
     protected final GeoDistance.FixedSourceDistance fixedSourceDistance;
-    protected final SortMode sortMode;
+    protected final MultiValueMode sortMode;
     private static final Double MISSING_VALUE = Double.MAX_VALUE;
 
     private final double[] values;
@@ -48,7 +49,7 @@ public class GeoDistanceComparator extends NumberComparatorBase<Double> {
 
     private GeoDistanceValues geoDistanceValues;
 
-    public GeoDistanceComparator(int numHits, IndexGeoPointFieldData<?> indexFieldData, double lat, double lon, DistanceUnit unit, GeoDistance geoDistance, SortMode sortMode) {
+    public GeoDistanceComparator(int numHits, IndexGeoPointFieldData<?> indexFieldData, double lat, double lon, DistanceUnit unit, GeoDistance geoDistance, MultiValueMode sortMode) {
         this.values = new double[numHits];
         this.indexFieldData = indexFieldData;
         this.lat = lat;
@@ -122,6 +123,11 @@ public class GeoDistanceComparator extends NumberComparatorBase<Double> {
         return Double.compare(bottom, MISSING_VALUE);
     }
 
+    @Override
+    public int compareTopMissing() {
+        return Double.compare(top, MISSING_VALUE);
+    }
+
     // Computes the distance based on geo points.
     // Due to this abstractions the geo distance comparator doesn't need to deal with whether fields have one
     // or multiple geo points per document.
@@ -161,9 +167,9 @@ public class GeoDistanceComparator extends NumberComparatorBase<Double> {
     // Deals with more than one geo point per document
     private static final class MV extends GeoDistanceValues {
 
-        private final SortMode sortMode;
+        private final MultiValueMode sortMode;
 
-        MV(GeoPointValues readerValues, GeoDistance.FixedSourceDistance fixedSourceDistance, SortMode sortMode) {
+        MV(GeoPointValues readerValues, GeoDistance.FixedSourceDistance fixedSourceDistance, MultiValueMode sortMode) {
             super(readerValues, fixedSourceDistance);
             this.sortMode = sortMode;
         }

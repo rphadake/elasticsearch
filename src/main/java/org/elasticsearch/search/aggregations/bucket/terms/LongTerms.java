@@ -18,7 +18,7 @@
  */
 package org.elasticsearch.search.aggregations.bucket.terms;
 
-import com.google.common.primitives.Longs;
+import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.text.StringText;
@@ -29,8 +29,8 @@ import org.elasticsearch.search.aggregations.AggregationStreams;
 import org.elasticsearch.search.aggregations.InternalAggregation;
 import org.elasticsearch.search.aggregations.InternalAggregations;
 import org.elasticsearch.search.aggregations.bucket.terms.support.BucketPriorityQueue;
-import org.elasticsearch.search.aggregations.support.numeric.ValueFormatter;
-import org.elasticsearch.search.aggregations.support.numeric.ValueFormatterStreams;
+import org.elasticsearch.search.aggregations.support.format.ValueFormatter;
+import org.elasticsearch.search.aggregations.support.format.ValueFormatterStreams;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -45,7 +45,7 @@ public class LongTerms extends InternalTerms {
 
     public static final Type TYPE = new Type("terms", "lterms");
 
-    public static AggregationStreams.Stream STREAM = new AggregationStreams.Stream() {
+    public static final AggregationStreams.Stream STREAM = new AggregationStreams.Stream() {
         @Override
         public LongTerms readResult(StreamInput in) throws IOException {
             LongTerms buckets = new LongTerms();
@@ -85,17 +85,17 @@ public class LongTerms extends InternalTerms {
 
         @Override
         int compareTerm(Terms.Bucket other) {
-            return Longs.compare(term, other.getKeyAsNumber().longValue());
+            return Long.compare(term, other.getKeyAsNumber().longValue());
         }
     }
 
-    private ValueFormatter valueFormatter;
+    private @Nullable ValueFormatter formatter;
 
     LongTerms() {} // for serialization
 
-    public LongTerms(String name, InternalOrder order, ValueFormatter valueFormatter, int requiredSize, long minDocCount, Collection<InternalTerms.Bucket> buckets) {
+    public LongTerms(String name, InternalOrder order, @Nullable ValueFormatter formatter, int requiredSize, long minDocCount, Collection<InternalTerms.Bucket> buckets) {
         super(name, order, requiredSize, minDocCount, buckets);
-        this.valueFormatter = valueFormatter;
+        this.formatter = formatter;
     }
 
     @Override
@@ -123,12 +123,12 @@ public class LongTerms extends InternalTerms {
                 reduced = terms;
             }
             if (buckets == null) {
-                buckets = new LongObjectPagedHashMap<List<Bucket>>(terms.buckets.size(), reduceContext.bigArrays());
+                buckets = new LongObjectPagedHashMap<>(terms.buckets.size(), reduceContext.bigArrays());
             }
             for (Terms.Bucket bucket : terms.buckets) {
                 List<Bucket> existingBuckets = buckets.get(((Bucket) bucket).term);
                 if (existingBuckets == null) {
-                    existingBuckets = new ArrayList<Bucket>(aggregations.size());
+                    existingBuckets = new ArrayList<>(aggregations.size());
                     buckets.put(((Bucket) bucket).term, existingBuckets);
                 }
                 existingBuckets.add((Bucket) bucket);
@@ -150,7 +150,7 @@ public class LongTerms extends InternalTerms {
                 ordered.insertWithOverflow(b);
             }
         }
-        buckets.release();
+        buckets.close();
         InternalTerms.Bucket[] list = new InternalTerms.Bucket[ordered.size()];
         for (int i = ordered.size() - 1; i >= 0; i--) {
             list[i] = (Bucket) ordered.pop();
@@ -163,11 +163,11 @@ public class LongTerms extends InternalTerms {
     public void readFrom(StreamInput in) throws IOException {
         this.name = in.readString();
         this.order = InternalOrder.Streams.readOrder(in);
-        this.valueFormatter = ValueFormatterStreams.readOptional(in);
+        this.formatter = ValueFormatterStreams.readOptional(in);
         this.requiredSize = readSize(in);
         this.minDocCount = in.readVLong();
         int size = in.readVInt();
-        List<InternalTerms.Bucket> buckets = new ArrayList<InternalTerms.Bucket>(size);
+        List<InternalTerms.Bucket> buckets = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
             buckets.add(new Bucket(in.readLong(), in.readVLong(), InternalAggregations.readAggregations(in)));
         }
@@ -179,7 +179,7 @@ public class LongTerms extends InternalTerms {
     public void writeTo(StreamOutput out) throws IOException {
         out.writeString(name);
         InternalOrder.Streams.writeOrder(order, out);
-        ValueFormatterStreams.writeOptional(valueFormatter, out);
+        ValueFormatterStreams.writeOptional(formatter, out);
         writeSize(requiredSize, out);
         out.writeVLong(minDocCount);
         out.writeVInt(buckets.size());
@@ -197,8 +197,8 @@ public class LongTerms extends InternalTerms {
         for (InternalTerms.Bucket bucket : buckets) {
             builder.startObject();
             builder.field(CommonFields.KEY, ((Bucket) bucket).term);
-            if (valueFormatter != null) {
-                builder.field(CommonFields.KEY_AS_STRING, valueFormatter.format(((Bucket) bucket).term));
+            if (formatter != null) {
+                builder.field(CommonFields.KEY_AS_STRING, formatter.format(((Bucket) bucket).term));
             }
             builder.field(CommonFields.DOC_COUNT, bucket.getDocCount());
             ((InternalAggregations) bucket.getAggregations()).toXContentInternal(builder, params);

@@ -23,6 +23,7 @@ import org.elasticsearch.Build;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionModule;
+import org.elasticsearch.action.bench.BenchmarkModule;
 import org.elasticsearch.bulk.udp.BulkUdpModule;
 import org.elasticsearch.bulk.udp.BulkUdpService;
 import org.elasticsearch.cache.recycler.CacheRecycler;
@@ -88,6 +89,7 @@ import org.elasticsearch.script.ScriptModule;
 import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.search.SearchModule;
 import org.elasticsearch.search.SearchService;
+import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.threadpool.ThreadPoolModule;
 import org.elasticsearch.transport.TransportModule;
@@ -123,9 +125,10 @@ public final class InternalNode implements Node {
 
     public InternalNode(Settings pSettings, boolean loadConfigSettings) throws ElasticsearchException {
         Tuple<Settings, Environment> tuple = InternalSettingsPreparer.prepareSettings(pSettings, loadConfigSettings);
-        tuple = new Tuple<Settings, Environment>(TribeService.processSettings(tuple.v1()), tuple.v2());
+        tuple = new Tuple<>(TribeService.processSettings(tuple.v1()), tuple.v2());
 
-        Version version = Version.CURRENT;
+        // The only place we can actually fake the version a node is running on:
+        Version version = pSettings.getAsVersion("tests.mock.version", Version.CURRENT);
 
         ESLogger logger = Loggers.getLogger(Node.class, tuple.v1().get("name"));
         logger.info("version[{}], pid[{}], build[{}/{}]", version, JvmInfo.jvmInfo().pid(), Build.CURRENT.hashShort(), Build.CURRENT.timestamp());
@@ -182,6 +185,7 @@ public final class InternalNode implements Node {
         modules.add(new ResourceWatcherModule());
         modules.add(new RepositoriesModule());
         modules.add(new TribeModule());
+        modules.add(new BenchmarkModule(settings));
 
         injector = modules.createInjector();
 
@@ -220,6 +224,7 @@ public final class InternalNode implements Node {
         injector.getInstance(IndicesClusterStateService.class).start();
         injector.getInstance(IndicesTTLService.class).start();
         injector.getInstance(RiversManager.class).start();
+        injector.getInstance(SnapshotsService.class).start();
         injector.getInstance(ClusterService.class).start();
         injector.getInstance(RoutingService.class).start();
         injector.getInstance(SearchService.class).start();
@@ -260,6 +265,7 @@ public final class InternalNode implements Node {
 
         injector.getInstance(RiversManager.class).stop();
 
+        injector.getInstance(SnapshotsService.class).stop();
         // stop any changes happening as a result of cluster state changes
         injector.getInstance(IndicesClusterStateService.class).stop();
         // we close indices first, so operations won't be allowed on it
@@ -314,6 +320,8 @@ public final class InternalNode implements Node {
         stopWatch.stop().start("rivers");
         injector.getInstance(RiversManager.class).close();
 
+        stopWatch.stop().start("snapshot_service");
+        injector.getInstance(SnapshotsService.class).close();
         stopWatch.stop().start("client");
         injector.getInstance(Client.class).close();
         stopWatch.stop().start("indices_cluster");

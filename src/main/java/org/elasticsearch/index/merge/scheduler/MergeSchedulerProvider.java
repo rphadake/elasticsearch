@@ -64,8 +64,8 @@ public abstract class MergeSchedulerProvider extends AbstractIndexShardComponent
     }
 
     private final ThreadPool threadPool;
-    private final CopyOnWriteArrayList<FailureListener> failureListeners = new CopyOnWriteArrayList<FailureListener>();
-    private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<Listener>();
+    private final CopyOnWriteArrayList<FailureListener> failureListeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
 
     private final boolean notifyOnMergeFailure;
 
@@ -122,9 +122,14 @@ public abstract class MergeSchedulerProvider extends AbstractIndexShardComponent
         return scheduler;
     }
 
+    /** Maximum number of allowed running merges before index throttling kicks in. */
+    public abstract int getMaxMerges();
+
     protected abstract MergeScheduler buildMergeScheduler();
 
     public abstract MergeStats stats();
 
     public abstract Set<OnGoingMerge> onGoingMerges();
+
+    public abstract void close();
 }

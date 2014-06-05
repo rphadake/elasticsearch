@@ -19,6 +19,7 @@
 
 package org.elasticsearch.gateway.local;
 
+import org.apache.lucene.util.LuceneTestCase.Slow;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateResponse;
@@ -34,21 +35,23 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.gateway.Gateway;
-import org.elasticsearch.test.*;
+import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.ElasticsearchIntegrationTest.ClusterScope;
-import org.elasticsearch.test.ElasticsearchIntegrationTest.Scope;
+import org.elasticsearch.test.TestCluster;
 import org.elasticsearch.test.TestCluster.RestartCallback;
 import org.junit.Test;
 
 import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilder;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
+import static org.elasticsearch.test.ElasticsearchIntegrationTest.*;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.nullValue;
 
 /**
  *
  */
-@ClusterScope(scope=Scope.TEST, numNodes=0)
+@ClusterScope(scope= Scope.TEST, numDataNodes =0)
+@Slow
 public class LocalGatewayIndexStateTests extends ElasticsearchIntegrationTest {
 
     private final ESLogger logger = Loggers.getLogger(LocalGatewayIndexStateTests.class);
@@ -96,8 +99,7 @@ public class LocalGatewayIndexStateTests extends ElasticsearchIntegrationTest {
     public void testSimpleOpenClose() throws Exception {
 
         logger.info("--> starting 2 nodes");
-        cluster().startNode(settingsBuilder().put("gateway.type", "local").build());
-        cluster().startNode(settingsBuilder().put("gateway.type", "local").build());
+        cluster().startNodesAsync(2, settingsBuilder().put("gateway.type", "local").build()).get();
 
         logger.info("--> creating test index");
         createIndex("test");
@@ -527,7 +529,14 @@ public class LocalGatewayIndexStateTests extends ElasticsearchIntegrationTest {
         logger.info("--> index a different doc");
         client().prepareIndex("test", "type1", "2").setSource("field1", "value2").setRefresh(true).execute().actionGet();
 
-        assertThat(client().prepareGet("test", "type1", "1").execute().actionGet().isExists(), equalTo(false));
+        logger.info("--> verify that doc 2 does exist");
         assertThat(client().prepareGet("test", "type1", "2").execute().actionGet().isExists(), equalTo(true));
+
+        // Need an ensure yellow here, since the index gets created (again) when we index doc2, so the shard that doc
+        // with id 1 is assigned to might not be in a started state. We don't need to do this when verifying if doc 2
+        // exists, because we index into the shard that doc gets assigned to.
+        ensureYellow("test");
+        logger.info("--> verify that doc 1 doesn't exist");
+        assertThat(client().prepareGet("test", "type1", "1").execute().actionGet().isExists(), equalTo(false));
     }
 }

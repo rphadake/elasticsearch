@@ -19,19 +19,25 @@
 package org.elasticsearch.test;
 
 import com.carrotsearch.randomizedtesting.SeedUtils;
+import com.carrotsearch.randomizedtesting.generators.RandomInts;
 import com.carrotsearch.randomizedtesting.generators.RandomPicks;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
-import com.google.common.collect.Collections2;
-import com.google.common.collect.Iterators;
-import com.google.common.collect.Sets;
+import com.google.common.collect.*;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.SettableFuture;
+import org.apache.lucene.util.AbstractRandomizedTest;
 import org.apache.lucene.util.IOUtils;
+import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchIllegalStateException;
+import org.elasticsearch.Version;
 import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.cache.recycler.PageCacheRecyclerModule;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.client.transport.TransportClient;
+import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -44,19 +50,29 @@ import org.elasticsearch.common.network.NetworkUtils;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.ImmutableSettings.Builder;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.common.transport.TransportAddress;
+import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.BigArraysModule;
+import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.env.NodeEnvironment;
+import org.elasticsearch.http.HttpServerTransport;
+import org.elasticsearch.index.cache.filter.FilterCacheModule;
+import org.elasticsearch.index.cache.filter.none.NoneFilterCache;
+import org.elasticsearch.index.cache.filter.weighted.WeightedFilterCache;
 import org.elasticsearch.index.engine.IndexEngineModule;
+import org.elasticsearch.index.fielddata.ordinals.InternalGlobalOrdinalsBuilder;
 import org.elasticsearch.node.Node;
 import org.elasticsearch.node.internal.InternalNode;
+import org.elasticsearch.plugins.PluginsService;
 import org.elasticsearch.search.SearchService;
 import org.elasticsearch.test.cache.recycler.MockBigArraysModule;
 import org.elasticsearch.test.cache.recycler.MockPageCacheRecyclerModule;
 import org.elasticsearch.test.engine.MockEngineModule;
 import org.elasticsearch.test.store.MockFSIndexStoreModule;
 import org.elasticsearch.test.transport.AssertingLocalTransportModule;
+import org.elasticsearch.test.transport.MockTransportService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.Transport;
 import org.elasticsearch.transport.TransportModule;
@@ -65,16 +81,20 @@ import org.junit.Assert;
 
 import java.io.Closeable;
 import java.io.File;
+import java.net.InetSocketAddress;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.carrotsearch.randomizedtesting.RandomizedTest.frequently;
 import static com.carrotsearch.randomizedtesting.RandomizedTest.systemPropertyAsBoolean;
-import static com.google.common.collect.Maps.newTreeMap;
 import static org.apache.lucene.util.LuceneTestCase.rarely;
 import static org.apache.lucene.util.LuceneTestCase.usually;
 import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilder;
 import static org.elasticsearch.node.NodeBuilder.nodeBuilder;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoTimeout;
 
 /**
  * TestCluster manages a set of JVM private nodes and allows convenient access to them.
@@ -87,7 +107,7 @@ import static org.elasticsearch.node.NodeBuilder.nodeBuilder;
  * are involved reproducibility is very limited. This class should only be used through {@link ElasticsearchIntegrationTest}.
  * </p>
  */
-public final class TestCluster implements Iterable<Client> {
+public final class TestCluster extends ImmutableTestCluster {
 
     private final ESLogger logger = Loggers.getLogger(getClass());
 
@@ -105,26 +125,27 @@ public final class TestCluster implements Iterable<Client> {
      */
     public static final String SETTING_CLUSTER_NODE_SEED = "test.cluster.node.seed";
 
-    private static final String CLUSTER_NAME_KEY = "cluster.name";
-
     private static final boolean ENABLE_MOCK_MODULES = systemPropertyAsBoolean(TESTS_ENABLE_MOCK_MODULES, true);
 
-    static final int DEFAULT_MIN_NUM_NODES = 2;
+    static final int DEFAULT_MIN_NUM_DATA_NODES = 2;
+    static final int DEFAULT_MAX_NUM_DATA_NODES = 6;
 
-    static final int DEFAULT_MAX_NUM_NODES = 6;
+    static final int DEFAULT_NUM_CLIENT_NODES = -1;
+    static final int DEFAULT_MIN_NUM_CLIENT_NODES = 0;
+    static final int DEFAULT_MAX_NUM_CLIENT_NODES = 1;
 
-    /* sorted map to make traverse order reproducible */
-    private final TreeMap<String, NodeAndClient> nodes = newTreeMap();
+    static final boolean DEFAULT_ENABLE_RANDOM_BENCH_NODES = true;
 
-    private final Set<File> dataDirToClean = new HashSet<File>();
+    /* sorted map to make traverse order reproducible, concurrent since we do checks on it not within a sync block */
+    private final NavigableMap<String, NodeAndClient> nodes = new TreeMap<>();
+
+    private final Set<File> dataDirToClean = new HashSet<>();
 
     private final String clusterName;
 
     private final AtomicBoolean open = new AtomicBoolean(true);
 
     private final Settings defaultSettings;
-
-    private Random random;
 
     private AtomicInteger nextNodeId = new AtomicInteger(0);
 
@@ -133,39 +154,56 @@ public final class TestCluster implements Iterable<Client> {
      * fully shared cluster to be more reproducible */
     private final long[] sharedNodesSeeds;
 
-    private double transportClientRatio = 0.0;
+    private final int numSharedDataNodes;
+
+    private final int numSharedClientNodes;
+
+    private final boolean enableRandomBenchNodes;
 
     private final NodeSettingsSource nodeSettingsSource;
 
+    private final ExecutorService executor;
+
+    private final boolean hasFilterCache;
+
     public TestCluster(long clusterSeed, String clusterName) {
-        this(clusterSeed, DEFAULT_MIN_NUM_NODES, DEFAULT_MAX_NUM_NODES, clusterName, NodeSettingsSource.EMPTY);
+        this(clusterSeed, DEFAULT_MIN_NUM_DATA_NODES, DEFAULT_MAX_NUM_DATA_NODES, clusterName, NodeSettingsSource.EMPTY, DEFAULT_NUM_CLIENT_NODES, DEFAULT_ENABLE_RANDOM_BENCH_NODES);
     }
 
-    public TestCluster(long clusterSeed, int minNumNodes, int maxNumNodes, String clusterName) {
-        this(clusterSeed, minNumNodes, maxNumNodes, clusterName, NodeSettingsSource.EMPTY);
+    public TestCluster(long clusterSeed, int minNumDataNodes, int maxNumDataNodes, String clusterName, int numClientNodes, boolean enableRandomBenchNodes) {
+        this(clusterSeed, minNumDataNodes, maxNumDataNodes, clusterName, NodeSettingsSource.EMPTY, numClientNodes, enableRandomBenchNodes);
     }
 
-    public TestCluster(long clusterSeed, int minNumNodes, int maxNumNodes, String clusterName, NodeSettingsSource nodeSettingsSource) {
+    public TestCluster(long clusterSeed, int minNumDataNodes, int maxNumDataNodes, String clusterName, NodeSettingsSource nodeSettingsSource, int numClientNodes, boolean enableRandomBenchNodes) {
         this.clusterName = clusterName;
 
-        if (minNumNodes < 0 || maxNumNodes < 0) {
-            throw new IllegalArgumentException("minimum and maximum number of nodes must be >= 0");
+        if (minNumDataNodes < 0 || maxNumDataNodes < 0) {
+            throw new IllegalArgumentException("minimum and maximum number of data nodes must be >= 0");
         }
 
-        if (maxNumNodes < minNumNodes) {
-            throw new IllegalArgumentException("maximum number of nodes must be >= minimum number of nodes");
+        if (maxNumDataNodes < minNumDataNodes) {
+            throw new IllegalArgumentException("maximum number of data nodes must be >= minimum number of  data nodes");
         }
 
         Random random = new Random(clusterSeed);
 
-        int numSharedNodes;
-        if (minNumNodes == maxNumNodes) {
-            numSharedNodes = minNumNodes;
-        } else {
-            numSharedNodes = minNumNodes + random.nextInt(maxNumNodes - minNumNodes);
-        }
+        this.numSharedDataNodes = RandomInts.randomIntBetween(random, minNumDataNodes, maxNumDataNodes);
+        assert this.numSharedDataNodes >= 0;
 
-        assert numSharedNodes >= 0;
+        //for now all shared data nodes are also master eligible
+        if (numSharedDataNodes == 0) {
+            this.numSharedClientNodes = 0;
+        } else {
+            if (numClientNodes < 0) {
+                this.numSharedClientNodes = RandomInts.randomIntBetween(random, DEFAULT_MIN_NUM_CLIENT_NODES, DEFAULT_MAX_NUM_CLIENT_NODES);
+            } else {
+                this.numSharedClientNodes = numClientNodes;
+            }
+        }
+        assert this.numSharedClientNodes >=0;
+
+        this.enableRandomBenchNodes = enableRandomBenchNodes;
+
         /*
          *  TODO
          *  - we might want start some master only nodes?
@@ -173,24 +211,30 @@ public final class TestCluster implements Iterable<Client> {
          *  - we could add a flag that never returns a client to the master
          *  - along those lines use a dedicated node that is master eligible and let all other nodes be only data nodes
          */
-        sharedNodesSeeds = new long[numSharedNodes];
+        sharedNodesSeeds = new long[numSharedDataNodes + numSharedClientNodes];
         for (int i = 0; i < sharedNodesSeeds.length; i++) {
             sharedNodesSeeds[i] = random.nextLong();
         }
-        logger.info("Setup TestCluster [{}] with seed [{}] using [{}] nodes", clusterName, SeedUtils.formatSeed(clusterSeed), numSharedNodes);
+
+        logger.info("Setup TestCluster [{}] with seed [{}] using [{}] data nodes and [{}] client nodes", clusterName, SeedUtils.formatSeed(clusterSeed), numSharedDataNodes, numSharedClientNodes);
         this.nodeSettingsSource = nodeSettingsSource;
         Builder builder = ImmutableSettings.settingsBuilder();
-        // randomize (multi/single) data path, special case for 0, don't set it at all...
-        int numOfDataPaths = random.nextInt(5);
-        if (numOfDataPaths > 0) {
-            StringBuilder dataPath = new StringBuilder();
-            for (int i = 0; i < numOfDataPaths; i++) {
-                dataPath.append("data/d").append(i).append(',');
+        if (random.nextInt(5) == 0) { // sometimes set this
+            // randomize (multi/single) data path, special case for 0, don't set it at all...
+            final int numOfDataPaths = random.nextInt(5);
+            if (numOfDataPaths > 0) {
+                StringBuilder dataPath = new StringBuilder();
+                for (int i = 0; i < numOfDataPaths; i++) {
+                    dataPath.append("data/d").append(i).append(',');
+                }
+                builder.put("path.data", dataPath.toString());
             }
-            builder.put("path.data", dataPath.toString());
         }
+        builder.put("script.disable_dynamic", false);
+        builder.put("plugins." + PluginsService.LOAD_PLUGIN_FROM_CLASSPATH, false);
         defaultSettings = builder.build();
-
+        executor = EsExecutors.newCached(1, TimeUnit.MINUTES, EsExecutors.daemonThreadFactory("test_" + clusterName));
+        this.hasFilterCache = random.nextBoolean();
     }
 
     public String getClusterName() {
@@ -206,18 +250,19 @@ public final class TestCluster implements Iterable<Client> {
 
     private Settings getSettings(int nodeOrdinal, long nodeSeed, Settings others) {
         Builder builder = ImmutableSettings.settingsBuilder().put(defaultSettings)
-                .put(getRandomNodeSettings(nodeSeed));
+                .put(getRandomNodeSettings(nodeSeed))
+                .put(FilterCacheModule.FilterCacheSettings.FILTER_CACHE_TYPE, hasFilterCache() ? WeightedFilterCache.class : NoneFilterCache.class);
         Settings settings = nodeSettingsSource.settings(nodeOrdinal);
         if (settings != null) {
-            if (settings.get(CLUSTER_NAME_KEY) != null) {
-                throw new ElasticsearchIllegalStateException("Tests must not set a '" + CLUSTER_NAME_KEY + "' as a node setting set '" + CLUSTER_NAME_KEY + "': [" + settings.get(CLUSTER_NAME_KEY) + "]");
+            if (settings.get(ClusterName.SETTING) != null) {
+                throw new ElasticsearchIllegalStateException("Tests must not set a '" + ClusterName.SETTING + "' as a node setting set '" + ClusterName.SETTING + "': [" + settings.get(ClusterName.SETTING) + "]");
             }
             builder.put(settings);
         }
         if (others != null) {
             builder.put(others);
         }
-        builder.put(CLUSTER_NAME_KEY, clusterName);
+        builder.put(ClusterName.SETTING, clusterName);
         return builder.build();
     }
 
@@ -236,6 +281,7 @@ public final class TestCluster implements Iterable<Client> {
             builder.put(IndexEngineModule.EngineSettings.ENGINE_TYPE, MockEngineModule.class.getName());
             builder.put(PageCacheRecyclerModule.CACHE_IMPL, MockPageCacheRecyclerModule.class.getName());
             builder.put(BigArraysModule.IMPL, MockBigArraysModule.class.getName());
+            builder.put(TransportModule.TRANSPORT_SERVICE_TYPE_KEY, MockTransportService.class.getName());
         }
         if (isLocalTransportConfigured()) {
             builder.put(TransportModule.TRANSPORT_TYPE_KEY, AssertingLocalTransportModule.class.getName());
@@ -259,7 +305,7 @@ public final class TestCluster implements Iterable<Client> {
             for (String name : Arrays.asList(ThreadPool.Names.BULK, ThreadPool.Names.FLUSH, ThreadPool.Names.GET,
                     ThreadPool.Names.INDEX, ThreadPool.Names.MANAGEMENT, ThreadPool.Names.MERGE, ThreadPool.Names.OPTIMIZE,
                     ThreadPool.Names.PERCOLATE, ThreadPool.Names.REFRESH, ThreadPool.Names.SEARCH, ThreadPool.Names.SNAPSHOT,
-                    ThreadPool.Names.SUGGEST, ThreadPool.Names.WARMER)) {
+                    ThreadPool.Names.SNAPSHOT_DATA, ThreadPool.Names.SUGGEST, ThreadPool.Names.WARMER)) {
                 if (random.nextBoolean()) {
                     final String type = RandomPicks.randomFrom(random, Arrays.asList("fixed", "cached", "scaling"));
                     builder.put(ThreadPool.THREADPOOL_GROUP + name + ".type", type);
@@ -267,6 +313,21 @@ public final class TestCluster implements Iterable<Client> {
             }
         }
         builder.put("plugins.isolation", random.nextBoolean());
+        builder.put(InternalGlobalOrdinalsBuilder.ORDINAL_MAPPING_THRESHOLD_INDEX_SETTING_KEY, 1 + random.nextInt(InternalGlobalOrdinalsBuilder.ORDINAL_MAPPING_THRESHOLD_DEFAULT));
+        if (random.nextInt(10) == 0) {
+            builder.put(EsExecutors.PROCESSORS, 1 + random.nextInt(AbstractRandomizedTest.TESTS_PROCESSORS));
+        } else {
+            builder.put(EsExecutors.PROCESSORS, AbstractRandomizedTest.TESTS_PROCESSORS);
+        }
+
+        if (random.nextBoolean()) {
+            if (random.nextBoolean()) {
+                builder.put("indices.fielddata.cache.size", 1 + random.nextInt(1000), ByteSizeUnit.MB);
+            }
+            if (random.nextBoolean()) {
+                builder.put("indices.fielddata.cache.expire", TimeValue.timeValueMillis(1 + random.nextInt(10000)));
+            }
+        }
         return builder.build();
     }
 
@@ -319,17 +380,28 @@ public final class TestCluster implements Iterable<Client> {
     }
 
     /**
-     * Ensures that at least <code>n</code> nodes are present in the cluster.
+     * Ensures that at least <code>n</code> data nodes are present in the cluster.
      * if more nodes than <code>n</code> are present this method will not
      * stop any of the running nodes.
      */
-    public synchronized void ensureAtLeastNumNodes(int n) {
-        int size = nodes.size();
-        for (int i = size; i < n; i++) {
-            logger.info("increasing cluster size from {} to {}", size, n);
-            NodeAndClient buildNode = buildNode();
-            buildNode.node().start();
-            publishNode(buildNode);
+    public void ensureAtLeastNumDataNodes(int n) {
+        List<ListenableFuture<String>> futures = Lists.newArrayList();
+        synchronized (this) {
+            int size = numDataNodes();
+            for (int i = size; i < n; i++) {
+                logger.info("increasing cluster size from {} to {}", size, n);
+                futures.add(startNodeAsync());
+            }
+        }
+        try {
+            Futures.allAsList(futures).get();
+        } catch (Exception e) {
+            throw new ElasticsearchException("failed to start nodes", e);
+        }
+        if (!futures.isEmpty()) {
+            synchronized (this) {
+                assertNoTimeout(client().admin().cluster().prepareHealth().setWaitForNodes(Integer.toString(nodes.size())).get());
+            }
         }
     }
 
@@ -338,15 +410,18 @@ public final class TestCluster implements Iterable<Client> {
      * If less nodes that <code>n</code> are running this method
      * will not start any additional nodes.
      */
-    public synchronized void ensureAtMostNumNodes(int n) {
-        if (nodes.size() <= n) {
+    public synchronized void ensureAtMostNumDataNodes(int n) {
+        int size = numDataNodes();
+        if (size <= n) {
             return;
         }
-        // prevent killing the master if possible
-        final Iterator<NodeAndClient> values = n == 0 ? nodes.values().iterator() : Iterators.filter(nodes.values().iterator(), Predicates.not(new MasterNodePredicate(getMasterName())));
-        final Iterator<NodeAndClient> limit = Iterators.limit(values, nodes.size() - n);
-        logger.info("changing cluster size from {} to {}", nodes.size() - n, n);
-        Set<NodeAndClient> nodesToRemove = new HashSet<NodeAndClient>();
+        // prevent killing the master if possible and client nodes
+        final Iterator<NodeAndClient> values = n == 0 ? nodes.values().iterator() : Iterators.filter(nodes.values().iterator(),
+                Predicates.and(new DataNodePredicate(), Predicates.not(new MasterNodePredicate(getMasterName()))));
+
+        final Iterator<NodeAndClient> limit = Iterators.limit(values, size - n);
+        logger.info("changing cluster size from {} to {}, {} data nodes", size(), n + numSharedClientNodes, n);
+        Set<NodeAndClient> nodesToRemove = new HashSet<>();
         while (limit.hasNext()) {
             NodeAndClient next = limit.next();
             nodesToRemove.add(next);
@@ -355,19 +430,23 @@ public final class TestCluster implements Iterable<Client> {
         for (NodeAndClient toRemove : nodesToRemove) {
             nodes.remove(toRemove.name);
         }
+        if (!nodesToRemove.isEmpty() && size() > 0) {
+            assertNoTimeout(client().admin().cluster().prepareHealth().setWaitForNodes(Integer.toString(nodes.size())).get());
+        }
     }
 
-    private NodeAndClient buildNode(Settings settings) {
+    private NodeAndClient buildNode(Settings settings, Version version) {
         int ord = nextNodeId.getAndIncrement();
-        return buildNode(ord, random.nextLong(), settings);
+        return buildNode(ord, random.nextLong(), settings, version);
     }
 
     private NodeAndClient buildNode() {
         int ord = nextNodeId.getAndIncrement();
-        return buildNode(ord, random.nextLong(), null);
+        return buildNode(ord, random.nextLong(), null, Version.CURRENT);
     }
 
-    private NodeAndClient buildNode(int nodeId, long seed, Settings settings) {
+    private NodeAndClient buildNode(int nodeId, long seed, Settings settings, Version version) {
+        assert Thread.holdsLock(this);
         ensureOpen();
         settings = getSettings(nodeId, seed, settings);
         String name = buildNodeName(nodeId);
@@ -376,6 +455,7 @@ public final class TestCluster implements Iterable<Client> {
                 .put(settings)
                 .put("name", name)
                 .put("discovery.id.seed", seed)
+                .put("tests.mock.version", version)
                 .build();
         Node node = nodeBuilder().settings(finalSettings).build();
         return new NodeAndClient(name, node, new RandomClientFactory());
@@ -385,10 +465,21 @@ public final class TestCluster implements Iterable<Client> {
         return "node_" + id;
     }
 
+    @Override
     public synchronized Client client() {
         ensureOpen();
         /* Randomly return a client to one of the nodes in the cluster */
         return getOrBuildRandomNode().client(random);
+    }
+
+    /**
+     * Returns a node client to a data node in the cluster.
+     * Note: use this with care tests should not rely on a certain nodes client.
+     */
+    public synchronized Client dataNodeClient() {
+        ensureOpen();
+        /* Randomly return a client to one of the nodes in the cluster */
+        return getRandomNodeAndClient(new DataNodePredicate()).client(random);
     }
 
     /**
@@ -485,11 +576,13 @@ public final class TestCluster implements Iterable<Client> {
         return null;
     }
 
+    @Override
     public void close() {
         ensureOpen();
         if (this.open.compareAndSet(true, false)) {
             IOUtils.closeWhileHandlingException(nodes.values());
             nodes.clear();
+            executor.shutdownNow();
         }
     }
 
@@ -622,7 +715,7 @@ public final class TestCluster implements Iterable<Client> {
         public static TransportClientFactory NO_SNIFF_CLIENT_FACTORY = new TransportClientFactory(false);
         public static TransportClientFactory SNIFF_CLIENT_FACTORY = new TransportClientFactory(true);
 
-        public TransportClientFactory(boolean sniff) {
+        private TransportClientFactory(boolean sniff) {
             this.sniff = sniff;
         }
 
@@ -631,7 +724,8 @@ public final class TestCluster implements Iterable<Client> {
             TransportAddress addr = ((InternalNode) node).injector().getInstance(TransportService.class).boundAddress().publishAddress();
             TransportClient client = new TransportClient(settingsBuilder().put("client.transport.nodes_sampler_interval", "1s")
                     .put("name", "transport_client_" + node.settings().get("name"))
-                    .put(CLUSTER_NAME_KEY, clusterName).put("client.transport.sniff", sniff).build());
+                    .put("plugins." + PluginsService.LOAD_PLUGIN_FROM_CLASSPATH, false)
+                    .put(ClusterName.SETTING, clusterName).put("client.transport.sniff", sniff).build());
             client.addTransportAddress(addr);
             return client;
         }
@@ -656,21 +750,23 @@ public final class TestCluster implements Iterable<Client> {
         }
     }
 
-    /**
-     * This method should be executed before each test to reset the cluster to it's initial state.
-     */
+    @Override
     public synchronized void beforeTest(Random random, double transportClientRatio) {
-        reset(random, true, transportClientRatio);
+        super.beforeTest(random, transportClientRatio);
+        reset(true);
     }
 
-    private synchronized void reset(Random random, boolean wipeData, double transportClientRatio) {
-        assert transportClientRatio >= 0.0 && transportClientRatio <= 1.0;
-        logger.debug("Reset test cluster with transport client ratio: [{}]", transportClientRatio);
-        this.transportClientRatio = transportClientRatio;
-        this.random = new Random(random.nextLong());
+    private synchronized void reset(boolean wipeData) {
         resetClients(); /* reset all clients - each test gets its own client based on the Random instance created above. */
         if (wipeData) {
             wipeDataDirectories();
+        }
+        // clear all rules for mock transport services
+        for (NodeAndClient nodeAndClient : nodes.values()) {
+            TransportService transportService = nodeAndClient.node.injector().getInstance(TransportService.class);
+            if (transportService instanceof MockTransportService) {
+                ((MockTransportService) transportService).clearAllRules();
+            }
         }
         if (nextNodeId.get() == sharedNodesSeeds.length && nodes.size() == sharedNodesSeeds.length) {
             logger.debug("Cluster hasn't changed - moving out - nodes: [{}] nextNodeId: [{}] numSharedNodes: [{}]", nodes.keySet(), nextNodeId.get(), sharedNodesSeeds.length);
@@ -679,14 +775,31 @@ public final class TestCluster implements Iterable<Client> {
         logger.debug("Cluster is NOT consistent - restarting shared nodes - nodes: [{}] nextNodeId: [{}] numSharedNodes: [{}]", nodes.keySet(), nextNodeId.get(), sharedNodesSeeds.length);
 
 
-        Set<NodeAndClient> sharedNodes = new HashSet<NodeAndClient>();
+        Set<NodeAndClient> sharedNodes = new HashSet<>();
+        assert sharedNodesSeeds.length == numSharedDataNodes + numSharedClientNodes;
         boolean changed = false;
-        for (int i = 0; i < sharedNodesSeeds.length; i++) {
+        for (int i = 0; i < numSharedDataNodes; i++) {
             String buildNodeName = buildNodeName(i);
             NodeAndClient nodeAndClient = nodes.get(buildNodeName);
             if (nodeAndClient == null) {
                 changed = true;
-                nodeAndClient = buildNode(i, sharedNodesSeeds[i], null);
+                nodeAndClient = buildNode(i, sharedNodesSeeds[i], null, Version.CURRENT);
+                nodeAndClient.node.start();
+                logger.info("Start Shared Node [{}] not shared", nodeAndClient.name);
+            }
+            sharedNodes.add(nodeAndClient);
+        }
+        for (int i = numSharedDataNodes; i < numSharedDataNodes + numSharedClientNodes; i++) {
+            String buildNodeName = buildNodeName(i);
+            NodeAndClient nodeAndClient = nodes.get(buildNodeName);
+            if (nodeAndClient == null) {
+                changed = true;
+                Builder clientSettingsBuilder = ImmutableSettings.builder().put("node.data", false).put("node.master", false);
+                if (enableRandomBenchNodes && frequently()) {
+                    //client nodes might also be bench nodes
+                    clientSettingsBuilder.put("node.bench", true);
+                }
+                nodeAndClient = buildNode(i, sharedNodesSeeds[i], clientSettingsBuilder.build(), Version.CURRENT);
                 nodeAndClient.node.start();
                 logger.info("Start Shared Node [{}] not shared", nodeAndClient.name);
             }
@@ -721,13 +834,10 @@ public final class TestCluster implements Iterable<Client> {
         logger.debug("Cluster is consistent again - nodes: [{}] nextNodeId: [{}] numSharedNodes: [{}]", nodes.keySet(), nextNodeId.get(), sharedNodesSeeds.length);
     }
 
-    /**
-     * This method should be executed during tearDown
-     */
+    @Override
     public synchronized void afterTest() {
         wipeDataDirectories();
         resetClients(); /* reset all clients - each test gets its own client based on the Random instance created above. */
-
     }
 
     private void resetClients() {
@@ -739,10 +849,11 @@ public final class TestCluster implements Iterable<Client> {
 
     private void wipeDataDirectories() {
         if (!dataDirToClean.isEmpty()) {
-            logger.info("Wipe data directory for all nodes locations: {}", this.dataDirToClean);
+            boolean deleted = false;
             try {
-                FileSystemUtils.deleteRecursively(dataDirToClean.toArray(new File[dataDirToClean.size()]));
+                deleted = FileSystemUtils.deleteSubDirectories(dataDirToClean.toArray(new File[dataDirToClean.size()]));
             } finally {
+                logger.info("Wipe data directory for all nodes locations: {} success: {}", this.dataDirToClean, deleted);
                 this.dataDirToClean.clear();
             }
         }
@@ -756,11 +867,27 @@ public final class TestCluster implements Iterable<Client> {
     }
 
     /**
-     * Returns an Iterabel to all instances for the given class &gt;T&lt; across all nodes in the cluster.
+     * Returns an Iterable to all instances for the given class &gt;T&lt; across all nodes in the cluster.
      */
     public synchronized <T> Iterable<T> getInstances(Class<T> clazz) {
-        List<T> instances = new ArrayList<T>(nodes.size());
+        List<T> instances = new ArrayList<>(nodes.size());
         for (NodeAndClient nodeAndClient : nodes.values()) {
+            instances.add(getInstanceFromNode(clazz, nodeAndClient.node));
+        }
+        return instances;
+    }
+
+    /**
+     * Returns an Iterable to all instances for the given class &gt;T&lt; across all data nodes in the cluster.
+     */
+    public synchronized <T> Iterable<T> getDataNodeInstances(Class<T> clazz) {
+        return getInstances(clazz, new DataNodePredicate());
+    }
+
+    private synchronized <T> Iterable<T> getInstances(Class<T> clazz, Predicate<NodeAndClient> predicate) {
+        Iterable<NodeAndClient> filteredNodes = Iterables.filter(nodes.values(), predicate);
+        List<T> instances = new ArrayList<>();
+        for (NodeAndClient nodeAndClient : filteredNodes) {
             instances.add(getInstanceFromNode(clazz, nodeAndClient.node));
         }
         return instances;
@@ -780,6 +907,14 @@ public final class TestCluster implements Iterable<Client> {
         } else {
             predicate = Predicates.alwaysTrue();
         }
+        return getInstance(clazz, predicate);
+    }
+
+    public synchronized <T> T getDataNodeInstance(Class<T> clazz) {
+        return getInstance(clazz, new DataNodePredicate());
+    }
+
+    private synchronized <T> T getInstance(Class<T> clazz, Predicate<NodeAndClient> predicate) {
         NodeAndClient randomNodeAndClient = getRandomNodeAndClient(predicate);
         assert randomNodeAndClient != null;
         return getInstanceFromNode(clazz, randomNodeAndClient.node);
@@ -789,26 +924,33 @@ public final class TestCluster implements Iterable<Client> {
      * Returns a reference to a random nodes instances of the given class &gt;T&lt;
      */
     public synchronized <T> T getInstance(Class<T> clazz) {
-        return getInstance(clazz, null);
+        return getInstance(clazz, Predicates.<NodeAndClient>alwaysTrue());
     }
 
     private synchronized <T> T getInstanceFromNode(Class<T> clazz, InternalNode node) {
         return node.injector().getInstance(clazz);
     }
 
-    /**
-     * Returns the number of nodes in the cluster.
-     */
+    @Override
     public synchronized int size() {
         return this.nodes.size();
     }
 
+    @Override
+    public InetSocketAddress[] httpAddresses() {
+        List<InetSocketAddress> addresses = Lists.newArrayList();
+        for (HttpServerTransport httpServerTransport : getInstances(HttpServerTransport.class)) {
+            addresses.add(((InetSocketTransportAddress) httpServerTransport.boundAddress().publishAddress()).address());
+        }
+        return addresses.toArray(new InetSocketAddress[addresses.size()]);
+    }
+
     /**
-     * Stops a random node in the cluster.
+     * Stops a random data node in the cluster.
      */
-    public synchronized void stopRandomNode() {
+    public synchronized void stopRandomDataNode() {
         ensureOpen();
-        NodeAndClient nodeAndClient = getRandomNodeAndClient();
+        NodeAndClient nodeAndClient = getRandomNodeAndClient(new DataNodePredicate());
         if (nodeAndClient != null) {
             logger.info("Closing random node [{}] ", nodeAndClient.name);
             nodes.remove(nodeAndClient.name);
@@ -867,13 +1009,33 @@ public final class TestCluster implements Iterable<Client> {
         restartRandomNode(EMPTY_CALLBACK);
     }
 
-
     /**
      * Restarts a random node in the cluster and calls the callback during restart.
      */
     public void restartRandomNode(RestartCallback callback) throws Exception {
+        restartRandomNode(Predicates.<NodeAndClient>alwaysTrue(), callback);
+    }
+
+    /**
+     * Restarts a random data node in the cluster
+     */
+    public void restartRandomDataNode() throws Exception {
+        restartRandomNode(EMPTY_CALLBACK);
+    }
+
+    /**
+     * Restarts a random data node in the cluster and calls the callback during restart.
+     */
+    public void restartRandomDataNode(RestartCallback callback) throws Exception {
+        restartRandomNode(new DataNodePredicate(), callback);
+    }
+
+    /**
+     * Restarts a random node in the cluster and calls the callback during restart.
+     */
+    private void restartRandomNode(Predicate<NodeAndClient> predicate, RestartCallback callback) throws Exception {
         ensureOpen();
-        NodeAndClient nodeAndClient = getRandomNodeAndClient();
+        NodeAndClient nodeAndClient = getRandomNodeAndClient(predicate);
         if (nodeAndClient != null) {
             logger.info("Restarting random node [{}] ", nodeAndClient.name);
             nodeAndClient.restart(callback);
@@ -882,7 +1044,7 @@ public final class TestCluster implements Iterable<Client> {
 
     private void restartAllNodes(boolean rollingRestart, RestartCallback callback) throws Exception {
         ensureOpen();
-        List<NodeAndClient> toRemove = new ArrayList<TestCluster.NodeAndClient>();
+        List<NodeAndClient> toRemove = new ArrayList<>();
         try {
             for (NodeAndClient nodeAndClient : nodes.values()) {
                 if (!callback.doRestart(nodeAndClient.name)) {
@@ -964,13 +1126,14 @@ public final class TestCluster implements Iterable<Client> {
         }
     }
 
-    synchronized Set<String> allButN(int numNodes) {
-        return nRandomNodes(size() - numNodes);
+    synchronized Set<String> allDataNodesButN(int numNodes) {
+        return nRandomDataNodes(numDataNodes() - numNodes);
     }
 
-    private synchronized Set<String> nRandomNodes(int numNodes) {
+    private synchronized Set<String> nRandomDataNodes(int numNodes) {
         assert size() >= numNodes;
-        return Sets.newHashSet(Iterators.limit(this.nodes.keySet().iterator(), numNodes));
+        NavigableMap<String, NodeAndClient> dataNodes = Maps.filterEntries(nodes, new EntryNodePredicate(new DataNodePredicate()));
+        return Sets.newHashSet(Iterators.limit(dataNodes.keySet().iterator(), numNodes));
     }
 
     public synchronized void startNodeClient(Settings settings) {
@@ -985,7 +1148,7 @@ public final class TestCluster implements Iterable<Client> {
         if (clusterService().state().routingTable().hasIndex(index)) {
             List<ShardRouting> allShards = clusterService().state().routingTable().allShards(index);
             DiscoveryNodes discoveryNodes = clusterService().state().getNodes();
-            Set<String> nodes = new HashSet<String>();
+            Set<String> nodes = new HashSet<>();
             for (ShardRouting shardRouting : allShards) {
                 if (shardRouting.assignedToNode()) {
                     DiscoveryNode discoveryNode = discoveryNodes.get(shardRouting.currentNodeId());
@@ -1000,28 +1163,115 @@ public final class TestCluster implements Iterable<Client> {
     /**
      * Starts a node with default settings and returns it's name.
      */
-    public String startNode() {
-        return startNode(ImmutableSettings.EMPTY);
+    public synchronized String startNode() {
+        return startNode(ImmutableSettings.EMPTY, Version.CURRENT);
+    }
+
+    /**
+     * Starts a node with default settings ad the specified version and returns it's name.
+     */
+    public synchronized String startNode(Version version) {
+        return startNode(ImmutableSettings.EMPTY, version);
     }
 
     /**
      * Starts a node with the given settings builder and returns it's name.
      */
-    public String startNode(Settings.Builder settings) {
-        return startNode(settings.build());
+    public synchronized String startNode(Settings.Builder settings) {
+        return startNode(settings.build(), Version.CURRENT);
     }
 
     /**
      * Starts a node with the given settings and returns it's name.
      */
-    public String startNode(Settings settings) {
-        NodeAndClient buildNode = buildNode(settings);
+    public synchronized String startNode(Settings settings) {
+        return startNode(settings, Version.CURRENT);
+    }
+
+    /**
+     * Starts a node with the given settings and version and returns it's name.
+     */
+    public synchronized String startNode(Settings settings, Version version) {
+        NodeAndClient buildNode = buildNode(settings, version);
         buildNode.node().start();
         publishNode(buildNode);
         return buildNode.name;
     }
 
-    private void publishNode(NodeAndClient nodeAndClient) {
+    /**
+     * Starts a node in an async manner with the given settings and returns future with its name.
+     */
+    public synchronized ListenableFuture<String> startNodeAsync() {
+        return startNodeAsync(ImmutableSettings.EMPTY, Version.CURRENT);
+    }
+
+    /**
+     * Starts a node in an async manner with the given settings and returns future with its name.
+     */
+    public synchronized ListenableFuture<String> startNodeAsync(final Settings settings) {
+        return startNodeAsync(settings, Version.CURRENT);
+    }
+
+    /**
+     * Starts a node in an async manner with the given settings and version and returns future with its name.
+     */
+    public synchronized ListenableFuture<String> startNodeAsync(final Settings settings, final Version version) {
+        final SettableFuture<String> future = SettableFuture.create();
+        final NodeAndClient buildNode = buildNode(settings, version);
+        Runnable startNode = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    buildNode.node().start();
+                    publishNode(buildNode);
+                    future.set(buildNode.name);
+                } catch (Throwable t) {
+                    future.setException(t);
+                }
+            }
+        };
+        executor.execute(startNode);
+        return future;
+    }
+
+    /**
+     * Starts multiple nodes in an async manner and returns future with its name.
+     */
+    public synchronized ListenableFuture<List<String>> startNodesAsync(final int numNodes) {
+        return startNodesAsync(numNodes, ImmutableSettings.EMPTY, Version.CURRENT);
+    }
+
+    /**
+     * Starts multiple nodes in an async manner with the given settings and returns future with its name.
+     */
+    public synchronized ListenableFuture<List<String>> startNodesAsync(final int numNodes, final Settings settings) {
+        return startNodesAsync(numNodes, settings, Version.CURRENT);
+    }
+
+    /**
+     * Starts multiple nodes in an async manner with the given settings and version and returns future with its name.
+     */
+    public synchronized ListenableFuture<List<String>> startNodesAsync(final int numNodes, final Settings settings, final Version version) {
+        List<ListenableFuture<String>> futures = Lists.newArrayList();
+        for (int i = 0; i < numNodes; i++) {
+            futures.add(startNodeAsync(settings, version));
+        }
+        return Futures.allAsList(futures);
+    }
+
+    /**
+     * Starts multiple nodes (based on the number of settings provided) in an async manner, with explicit settings for each node.
+     * The order of the node names returned matches the order of the settings provided.
+     */
+    public synchronized ListenableFuture<List<String>> startNodesAsync(final Settings... settings) {
+        List<ListenableFuture<String>> futures = Lists.newArrayList();
+        for (Settings setting : settings) {
+            futures.add(startNodeAsync(setting, Version.CURRENT));
+        }
+        return Futures.allAsList(futures);
+    }
+
+    private synchronized void publishNode(NodeAndClient nodeAndClient) {
         assert !nodeAndClient.node().isClosed();
         NodeEnvironment nodeEnv = getInstanceFromNode(NodeEnvironment.class, nodeAndClient.node);
         if (nodeEnv.hasNodeFile()) {
@@ -1031,14 +1281,25 @@ public final class TestCluster implements Iterable<Client> {
     }
 
     public void closeNonSharedNodes(boolean wipeData) {
-        reset(random, wipeData, transportClientRatio);
+        reset(wipeData);
     }
 
-    public int dataNodes() {
+    @Override
+    public int numDataNodes() {
         return dataNodeAndClients().size();
     }
 
-    private Collection<NodeAndClient> dataNodeAndClients() {
+    @Override
+    public int numBenchNodes() {
+        return benchNodeAndClients().size();
+    }
+
+    @Override
+    public boolean hasFilterCache() {
+        return hasFilterCache;
+    }
+
+    private synchronized Collection<NodeAndClient> dataNodeAndClients() {
         return Collections2.filter(nodes.values(), new DataNodePredicate());
     }
 
@@ -1063,10 +1324,33 @@ public final class TestCluster implements Iterable<Client> {
     }
 
     private static final class ClientNodePredicate implements Predicate<NodeAndClient> {
-
         @Override
         public boolean apply(NodeAndClient nodeAndClient) {
             return nodeAndClient.node.settings().getAsBoolean("node.client", false);
+        }
+    }
+
+    private synchronized Collection<NodeAndClient> benchNodeAndClients() {
+        return Collections2.filter(nodes.values(), new BenchNodePredicate());
+    }
+
+    private static final class BenchNodePredicate implements Predicate<NodeAndClient> {
+        @Override
+        public boolean apply(NodeAndClient nodeAndClient) {
+            return nodeAndClient.node.settings().getAsBoolean("node.bench", false);
+        }
+    }
+
+    private static final class EntryNodePredicate implements Predicate<Map.Entry<String, NodeAndClient>> {
+        private final Predicate<NodeAndClient> delegateNodePredicate;
+
+        EntryNodePredicate(Predicate<NodeAndClient> delegateNodePredicate) {
+            this.delegateNodePredicate = delegateNodePredicate;
+        }
+
+        @Override
+        public boolean apply(Map.Entry<String, NodeAndClient> entry) {
+            return delegateNodePredicate.apply(entry.getValue());
         }
     }
 
@@ -1098,7 +1382,7 @@ public final class TestCluster implements Iterable<Client> {
      * Returns a predicate that only accepts settings of nodes with one of the given names.
      */
     public static Predicate<Settings> nameFilter(String... nodeName) {
-        return new NodeNamePredicate(new HashSet<String>(Arrays.asList(nodeName)));
+        return new NodeNamePredicate(new HashSet<>(Arrays.asList(nodeName)));
     }
 
     private static final class NodeNamePredicate implements Predicate<Settings> {

@@ -25,26 +25,26 @@ import org.elasticsearch.common.util.LongArray;
 import org.elasticsearch.index.fielddata.DoubleValues;
 import org.elasticsearch.search.aggregations.Aggregator;
 import org.elasticsearch.search.aggregations.InternalAggregation;
-import org.elasticsearch.search.aggregations.metrics.MetricsAggregator;
+import org.elasticsearch.search.aggregations.metrics.NumericMetricsAggregator;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
-import org.elasticsearch.search.aggregations.support.ValueSourceAggregatorFactory;
+import org.elasticsearch.search.aggregations.support.ValuesSource;
+import org.elasticsearch.search.aggregations.support.ValuesSourceAggregatorFactory;
 import org.elasticsearch.search.aggregations.support.ValuesSourceConfig;
-import org.elasticsearch.search.aggregations.support.numeric.NumericValuesSource;
 
 import java.io.IOException;
 
 /**
  *
  */
-public class AvgAggregator extends MetricsAggregator.SingleValue {
+public class AvgAggregator extends NumericMetricsAggregator.SingleValue {
 
-    private final NumericValuesSource valuesSource;
+    private final ValuesSource.Numeric valuesSource;
     private DoubleValues values;
 
     private LongArray counts;
     private DoubleArray sums;
 
-    public AvgAggregator(String name, long estimatedBucketsCount, NumericValuesSource valuesSource, AggregationContext context, Aggregator parent) {
+    public AvgAggregator(String name, long estimatedBucketsCount, ValuesSource.Numeric valuesSource, AggregationContext context, Aggregator parent) {
         super(name, estimatedBucketsCount, context, parent);
         this.valuesSource = valuesSource;
         if (valuesSource != null) {
@@ -96,9 +96,9 @@ public class AvgAggregator extends MetricsAggregator.SingleValue {
         return new InternalAvg(name, 0.0, 0l);
     }
 
-    public static class Factory extends ValueSourceAggregatorFactory.LeafOnly<NumericValuesSource> {
+    public static class Factory extends ValuesSourceAggregatorFactory.LeafOnly<ValuesSource.Numeric> {
 
-        public Factory(String name, String type, ValuesSourceConfig<NumericValuesSource> valuesSourceConfig) {
+        public Factory(String name, String type, ValuesSourceConfig<ValuesSource.Numeric> valuesSourceConfig) {
             super(name, type, valuesSourceConfig);
         }
 
@@ -108,14 +108,14 @@ public class AvgAggregator extends MetricsAggregator.SingleValue {
         }
 
         @Override
-        protected Aggregator create(NumericValuesSource valuesSource, long expectedBucketsCount, AggregationContext aggregationContext, Aggregator parent) {
+        protected Aggregator create(ValuesSource.Numeric valuesSource, long expectedBucketsCount, AggregationContext aggregationContext, Aggregator parent) {
             return new AvgAggregator(name, expectedBucketsCount, valuesSource, aggregationContext, parent);
         }
     }
 
     @Override
-    public void doRelease() {
-        Releasables.release(counts, sums);
+    public void doClose() {
+        Releasables.close(counts, sums);
     }
 
 }

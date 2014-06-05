@@ -38,7 +38,7 @@ public class UnmappedSignificantTerms extends InternalSignificantTerms {
     private static final Collection<Bucket> BUCKETS = Collections.emptyList();
     private static final Map<String, Bucket> BUCKETS_MAP = Collections.emptyMap();
 
-    public static AggregationStreams.Stream STREAM = new AggregationStreams.Stream() {
+    public static final AggregationStreams.Stream STREAM = new AggregationStreams.Stream() {
         @Override
         public UnmappedSignificantTerms readResult(StreamInput in) throws IOException {
             UnmappedSignificantTerms buckets = new UnmappedSignificantTerms();
@@ -53,10 +53,10 @@ public class UnmappedSignificantTerms extends InternalSignificantTerms {
 
     UnmappedSignificantTerms() {} // for serialization
 
-    public UnmappedSignificantTerms(String name,  int requiredSize, long minDocCount) {
+    public UnmappedSignificantTerms(String name, int requiredSize, long minDocCount) {
         //We pass zero for index/subset sizes because for the purpose of significant term analysis 
         // we assume an unmapped index's size is irrelevant to the proceedings. 
-        super(0,0,name, requiredSize, minDocCount, BUCKETS);
+        super(0, 0, name, requiredSize, minDocCount, BUCKETS);
     }
 
     @Override

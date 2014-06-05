@@ -21,7 +21,7 @@ package org.elasticsearch.index.query;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
-import org.apache.lucene.queries.XTermsFilter;
+import org.apache.lucene.queries.TermsFilter;
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.inject.Inject;
@@ -52,7 +52,7 @@ public class IdsFilterParser implements FilterParser {
     public Filter parse(QueryParseContext parseContext) throws IOException, QueryParsingException {
         XContentParser parser = parseContext.parser();
 
-        List<BytesRef> ids = new ArrayList<BytesRef>();
+        List<BytesRef> ids = new ArrayList<>();
         Collection<String> types = null;
         String filterName = null;
         String currentFieldName = null;
@@ -72,7 +72,7 @@ public class IdsFilterParser implements FilterParser {
                         ids.add(value);
                     }
                 } else if ("types".equals(currentFieldName) || "type".equals(currentFieldName)) {
-                    types = new ArrayList<String>();
+                    types = new ArrayList<>();
                     while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
                         String value = parser.textOrNull();
                         if (value == null) {
@@ -108,7 +108,7 @@ public class IdsFilterParser implements FilterParser {
             types = parseContext.mapperService().types();
         }
 
-        XTermsFilter filter = new XTermsFilter(UidFieldMapper.NAME, Uid.createTypeUids(types, ids));
+        TermsFilter filter = new TermsFilter(UidFieldMapper.NAME, Uid.createTypeUids(types, ids));
         if (filterName != null) {
             parseContext.addNamedFilter(filterName, filter);
         }

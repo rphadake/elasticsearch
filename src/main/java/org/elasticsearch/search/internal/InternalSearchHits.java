@@ -50,8 +50,8 @@ public class InternalSearchHits implements SearchHits {
             NO_STREAM
         }
 
-        private IdentityHashMap<SearchShardTarget, Integer> shardHandleLookup = new IdentityHashMap<SearchShardTarget, Integer>();
-        private IntObjectOpenHashMap<SearchShardTarget> handleShardLookup = new IntObjectOpenHashMap<SearchShardTarget>();
+        private IdentityHashMap<SearchShardTarget, Integer> shardHandleLookup = new IdentityHashMap<>();
+        private IntObjectOpenHashMap<SearchShardTarget> handleShardLookup = new IntObjectOpenHashMap<>();
         private ShardTargetType streamShardTarget = ShardTargetType.STREAM;
 
         public StreamContext reset() {
@@ -90,6 +90,10 @@ public class InternalSearchHits implements SearchHits {
         return cache.get().reset();
     }
 
+    public static InternalSearchHits empty() {
+        // We shouldn't use static final instance, since that could directly be returned by native transport clients
+        return new InternalSearchHits(EMPTY, 0, 0);
+    }
 
     public static final InternalSearchHit[] EMPTY = new InternalSearchHit[0];
 

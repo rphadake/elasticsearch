@@ -20,9 +20,8 @@
 package org.elasticsearch.gateway.local;
 
 import org.apache.lucene.util.LuceneTestCase.Slow;
-import org.elasticsearch.action.admin.indices.status.IndexShardStatus;
-import org.elasticsearch.action.admin.indices.status.IndicesStatusResponse;
-import org.elasticsearch.action.admin.indices.status.ShardStatus;
+import org.elasticsearch.action.admin.indices.recovery.RecoveryResponse;
+import org.elasticsearch.action.admin.indices.recovery.ShardRecoveryResponse;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.routing.allocation.allocator.BalancedShardsAllocator;
@@ -32,15 +31,19 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.index.query.FilterBuilders;
 import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.ElasticsearchIntegrationTest.ClusterScope;
-import org.elasticsearch.test.ElasticsearchIntegrationTest.Scope;
 import org.elasticsearch.test.TestCluster.RestartCallback;
+import org.elasticsearch.test.store.MockDirectoryHelper;
 import org.junit.Test;
 
+import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_REPLICAS;
+import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_SHARDS;
 import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termQuery;
+import static org.elasticsearch.test.ElasticsearchIntegrationTest.*;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
 import static org.hamcrest.Matchers.*;
@@ -48,7 +51,8 @@ import static org.hamcrest.Matchers.*;
 /**
  *
  */
-@ClusterScope(numNodes = 0, scope = Scope.TEST)
+@ClusterScope(numDataNodes = 0, scope = Scope.TEST)
+@Slow
 public class SimpleRecoveryLocalGatewayTests extends ElasticsearchIntegrationTest {
 
     private ImmutableSettings.Builder settingsBuilder() {
@@ -110,32 +114,68 @@ public class SimpleRecoveryLocalGatewayTests extends ElasticsearchIntegrationTes
         String mapping = XContentFactory.jsonBuilder().startObject().startObject("type1")
                 .startObject("properties").startObject("field").field("type", "string").endObject().startObject("num").field("type", "integer").endObject().endObject()
                 .endObject().endObject().string();
-        assertAcked(prepareCreate("test").addMapping("type1", mapping));
+        // note: default replica settings are tied to #data nodes-1 which is 0 here. We can do with 1 in this test.
+        int numberOfShards = numberOfShards();
+        assertAcked(prepareCreate("test").setSettings(
+                SETTING_NUMBER_OF_SHARDS, numberOfShards(),
+                SETTING_NUMBER_OF_REPLICAS, randomIntBetween(0, 1)
+        ).addMapping("type1", mapping));
 
-        for (int i = 0; i < 100; i++) {
-            client().prepareIndex("test", "type1", "1").setSource(jsonBuilder().startObject().field("_id", "1").field("field", "value1").startArray("num").value(14).value(179).endArray().endObject()).execute().actionGet();
-            client().prepareIndex("test", "type1", "2").setSource(jsonBuilder().startObject().field("_id", "2").field("field", "value2").startArray("num").value(14).endArray().endObject()).execute().actionGet();
+        int value1Docs;
+        int value2Docs;
+        boolean indexToAllShards = randomBoolean();
+
+        if (indexToAllShards) {
+            // insert enough docs so all shards will have a doc
+            value1Docs = randomIntBetween(numberOfShards * 10, numberOfShards * 20);
+            value2Docs = randomIntBetween(numberOfShards * 10, numberOfShards * 20);
+
+        } else {
+            // insert a two docs, some shards will not have anything
+            value1Docs = 1;
+            value2Docs = 1;
+        }
+
+
+        for (int i = 0; i < 1 + randomInt(100); i++) {
+            for (int id = 0; id < Math.max(value1Docs, value2Docs); id++) {
+                if (id < value1Docs) {
+                    index("test", "type1", "1_" + id,
+                            jsonBuilder().startObject().field("field", "value1").startArray("num").value(14).value(179).endArray().endObject()
+                    );
+                }
+                if (id < value2Docs) {
+                    index("test", "type1", "2_" + id,
+                            jsonBuilder().startObject().field("field", "value2").startArray("num").value(14).endArray().endObject()
+                    );
+                }
+            }
+
         }
 
         refresh();
 
-        for (int i = 0; i < 10; i++) {
-            assertHitCount(client().prepareCount().setQuery(matchAllQuery()).execute().actionGet(), 2);
-            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value1")).execute().actionGet(), 1);
-            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value2")).execute().actionGet(), 1);
-            assertHitCount(client().prepareCount().setQuery(termQuery("num", 179)).execute().actionGet(), 1);
+        for (int i = 0; i <= randomInt(10); i++) {
+            assertHitCount(client().prepareCount().setQuery(matchAllQuery()).get(), value1Docs + value2Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value1")).get(), value1Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value2")).get(), value2Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("num", 179)).get(), value1Docs);
         }
-
+        if (!indexToAllShards) {
+            // we have to verify primaries are started for them to be restored
+            logger.info("Ensure all primaries have been started");
+            ensureYellow();
+        }
         cluster().fullRestart();
 
         logger.info("Running Cluster Health (wait for the shards to startup)");
         ensureYellow();
 
-        for (int i = 0; i < 10; i++) {
-            assertHitCount(client().prepareCount().setQuery(matchAllQuery()).execute().actionGet(), 2);
-            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value1")).execute().actionGet(), 1);
-            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value2")).execute().actionGet(), 1);
-            assertHitCount(client().prepareCount().setQuery(termQuery("num", 179)).execute().actionGet(), 1);
+        for (int i = 0; i <= randomInt(10); i++) {
+            assertHitCount(client().prepareCount().setQuery(matchAllQuery()).get(), value1Docs + value2Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value1")).get(), value1Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value2")).get(), value2Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("num", 179)).get(), value1Docs);
         }
 
         cluster().fullRestart();
@@ -144,11 +184,11 @@ public class SimpleRecoveryLocalGatewayTests extends ElasticsearchIntegrationTes
         logger.info("Running Cluster Health (wait for the shards to startup)");
         ensureYellow();
 
-        for (int i = 0; i < 10; i++) {
-            assertHitCount(client().prepareCount().setQuery(matchAllQuery()).execute().actionGet(), 2);
-            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value1")).execute().actionGet(), 1);
-            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value2")).execute().actionGet(), 1);
-            assertHitCount(client().prepareCount().setQuery(termQuery("num", 179)).execute().actionGet(), 1);
+        for (int i = 0; i <= randomInt(10); i++) {
+            assertHitCount(client().prepareCount().setQuery(matchAllQuery()).get(), value1Docs + value2Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value1")).get(), value1Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("field", "value2")).get(), value2Docs);
+            assertHitCount(client().prepareCount().setQuery(termQuery("num", 179)).get(), value1Docs);
         }
     }
 
@@ -228,9 +268,7 @@ public class SimpleRecoveryLocalGatewayTests extends ElasticsearchIntegrationTes
     @Slow
     public void testLatestVersionLoaded() throws Exception {
         // clean two nodes
-
-        cluster().startNode(settingsBuilder().put("gateway.recover_after_nodes", 2).build());
-        cluster().startNode(settingsBuilder().put("gateway.recover_after_nodes", 2).build());
+        cluster().startNodesAsync(2, settingsBuilder().put("gateway.recover_after_nodes", 2).build()).get();
 
         client().prepareIndex("test", "type1", "1").setSource(jsonBuilder().startObject().field("field", "value1").endObject()).execute().actionGet();
         client().admin().indices().prepareFlush().execute().actionGet();
@@ -303,13 +341,10 @@ public class SimpleRecoveryLocalGatewayTests extends ElasticsearchIntegrationTes
         ImmutableSettings.Builder settings = settingsBuilder()
                 .put("action.admin.cluster.node.shutdown.delay", "10ms")
                 .put("gateway.recover_after_nodes", 4)
+                .put(MockDirectoryHelper.CRASH_INDEX, false)
+                .put(BalancedShardsAllocator.SETTING_THRESHOLD, 1.1f); // use less agressive settings
 
-                .put(BalancedShardsAllocator.SETTING_THRESHOLD, 1.1f); // use less aggressive settings
-
-        cluster().startNode(settings);
-        cluster().startNode(settings);
-        cluster().startNode(settings);
-        cluster().startNode(settings);
+        cluster().startNodesAsync(4, settings.build()).get();
 
         logger.info("--> indexing docs");
         for (int i = 0; i < 1000; i++) {
@@ -318,13 +353,7 @@ public class SimpleRecoveryLocalGatewayTests extends ElasticsearchIntegrationTes
                 client().admin().indices().prepareFlush().execute().actionGet();
             }
         }
-        logger.info("Running Cluster Health");
-        ensureGreen();
-
-        logger.info("--> shutting down the nodes");
-        // Disable allocations while we are closing nodes
-        client().admin().cluster().prepareUpdateSettings().setTransientSettings(settingsBuilder().put(DisableAllocationDecider.CLUSTER_ROUTING_ALLOCATION_DISABLE_ALLOCATION, true)).execute().actionGet();
-        cluster().fullRestart();
+        client().admin().indices().prepareFlush().execute().actionGet();
 
         logger.info("Running Cluster Health");
         ensureGreen();
@@ -334,21 +363,29 @@ public class SimpleRecoveryLocalGatewayTests extends ElasticsearchIntegrationTes
         client().admin().cluster().prepareUpdateSettings().setTransientSettings(settingsBuilder().put(DisableAllocationDecider.CLUSTER_ROUTING_ALLOCATION_DISABLE_ALLOCATION, true)).execute().actionGet();
         cluster().fullRestart();
 
+        logger.info("Running Cluster Health");
+        ensureGreen();
+
+        logger.info("--> shutting down the nodes");
+        // Disable allocations while we are closing nodes
+        client().admin().cluster().prepareUpdateSettings().setTransientSettings(settingsBuilder().put(DisableAllocationDecider.CLUSTER_ROUTING_ALLOCATION_DISABLE_ALLOCATION, true)).execute().actionGet();
+        cluster().fullRestart();
+
 
         logger.info("Running Cluster Health");
         ensureGreen();
 
-        IndicesStatusResponse statusResponse = client().admin().indices().prepareStatus("test").setRecovery(true).execute().actionGet();
-        for (IndexShardStatus indexShardStatus : statusResponse.getIndex("test")) {
-            for (ShardStatus shardStatus : indexShardStatus) {
-                if (!shardStatus.getShardRouting().primary()) {
-                    logger.info("--> shard {}, recovered {}, reuse {}", shardStatus.getShardId(), shardStatus.getPeerRecoveryStatus().getRecoveredIndexSize(), shardStatus.getPeerRecoveryStatus().getReusedIndexSize());
-                    assertThat(shardStatus.getPeerRecoveryStatus().getRecoveredIndexSize().bytes(), greaterThan(0l));
-                    assertThat(shardStatus.getPeerRecoveryStatus().getReusedIndexSize().bytes(), greaterThan(0l));
-                    assertThat(shardStatus.getPeerRecoveryStatus().getReusedIndexSize().bytes(), greaterThan(shardStatus.getPeerRecoveryStatus().getRecoveredIndexSize().bytes()));
-                }
+        RecoveryResponse recoveryResponse = client().admin().indices().prepareRecoveries("test").get();
+        for (ShardRecoveryResponse response : recoveryResponse.shardResponses().get("test")) {
+            RecoveryState recoveryState = response.recoveryState();
+            if (!recoveryState.getPrimary()) {
+                logger.info("--> shard {}, recovered {}, reuse {}", response.getShardId(), recoveryState.getIndex().recoveredTotalSize(), recoveryState.getIndex().reusedByteCount());
+                assertThat(recoveryState.getIndex().recoveredByteCount(), greaterThan(0l));
+                assertThat(recoveryState.getIndex().reusedByteCount(), greaterThan(0l));
+                assertThat(recoveryState.getIndex().reusedByteCount(), greaterThan(recoveryState.getIndex().numberOfRecoveredBytes()));
             }
         }
+
     }
 
     @Test

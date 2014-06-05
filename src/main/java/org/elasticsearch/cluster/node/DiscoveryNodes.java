@@ -25,6 +25,7 @@ import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.UnmodifiableIterator;
 import org.elasticsearch.ElasticsearchIllegalArgumentException;
+import org.elasticsearch.Version;
 import org.elasticsearch.common.Booleans;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
@@ -282,6 +283,20 @@ public class DiscoveryNodes implements Iterable<DiscoveryNode> {
         return nodesIds == null || nodesIds.length == 0 || (nodesIds.length == 1 && nodesIds[0].equals("_all"));
     }
 
+
+    /**
+     * Returns the version of the node with the oldest version in the cluster
+     *
+     * @return the oldest version in the cluster
+     */
+    public Version smallestVersion() {
+        Version version = Version.CURRENT;
+        for (ObjectCursor<DiscoveryNode> cursor : nodes.values()) {
+            version = Version.smallest(version, cursor.value.version());
+        }
+        return version;
+    }
+
     /**
      * Resolve a node with a given id
      *
@@ -309,7 +324,7 @@ public class DiscoveryNodes implements Iterable<DiscoveryNode> {
             }
             return nodesIds;
         } else {
-            ObjectOpenHashSet<String> resolvedNodesIds = new ObjectOpenHashSet<String>(nodesIds.length);
+            ObjectOpenHashSet<String> resolvedNodesIds = new ObjectOpenHashSet<>(nodesIds.length);
             for (String nodeId : nodesIds) {
                 if (nodeId.equals("_local")) {
                     String localNodeId = localNodeId();

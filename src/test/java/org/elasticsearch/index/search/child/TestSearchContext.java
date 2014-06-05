@@ -20,12 +20,12 @@ package org.elasticsearch.index.search.child;
 
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.cache.recycler.PageCacheRecycler;
-import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.index.analysis.AnalysisService;
 import org.elasticsearch.index.cache.docset.DocSetCache;
@@ -91,11 +91,6 @@ public class TestSearchContext extends SearchContext {
         this.indexService = null;
         this.filterCache = null;
         this.indexFieldDataService = null;
-    }
-
-    @Override
-    public boolean clearAndRelease() {
-        return false;
     }
 
     @Override
@@ -527,6 +522,15 @@ public class TestSearchContext extends SearchContext {
     }
 
     @Override
+    public void lastEmittedDoc(ScoreDoc doc) {
+    }
+
+    @Override
+    public ScoreDoc lastEmittedDoc() {
+        return null;
+    }
+
+    @Override
     public SearchLookup lookup() {
         return null;
     }
@@ -544,14 +548,6 @@ public class TestSearchContext extends SearchContext {
     @Override
     public FetchSearchResult fetchResult() {
         return null;
-    }
-
-    @Override
-    public void addReleasable(Releasable releasable) {
-    }
-
-    @Override
-    public void clearReleasables() {
     }
 
     @Override
@@ -580,7 +576,17 @@ public class TestSearchContext extends SearchContext {
     }
 
     @Override
-    public boolean release() throws ElasticsearchException {
+    public void doClose() throws ElasticsearchException {
+        // no-op
+    }
+
+    @Override
+    public boolean useSlowScroll() {
         return false;
+    }
+
+    @Override
+    public SearchContext useSlowScroll(boolean useSlowScroll) {
+        return null;
     }
 }

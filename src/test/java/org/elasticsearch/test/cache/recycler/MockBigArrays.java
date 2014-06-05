@@ -21,13 +21,17 @@ package org.elasticsearch.test.cache.recycler;
 
 import com.carrotsearch.randomizedtesting.RandomizedContext;
 import com.carrotsearch.randomizedtesting.SeedUtils;
+import com.google.common.base.Predicate;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.cache.recycler.PageCacheRecycler;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.*;
+import org.elasticsearch.test.ElasticsearchTestCase;
 
-import java.util.Random;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -40,28 +44,45 @@ public class MockBigArrays extends BigArrays {
      */
     private static final boolean TRACK_ALLOCATIONS = false;
 
-    private static boolean DISCARD = false;
+    private static final Set<BigArrays> INSTANCES = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<BigArrays, Boolean>()));
+    private static final ConcurrentMap<Object, Object> ACQUIRED_ARRAYS = new ConcurrentHashMap<>();
 
-    private static ConcurrentMap<Object, Object> ACQUIRED_ARRAYS = new ConcurrentHashMap<Object, Object>();
-
-    /**
-     * Discard the next check that all arrays should be released. This can be useful if for a specific test, the cost to make
-     * sure the array is released is higher than the cost the user would experience if the array would not be released.
-     */
-    public static void discardNextCheck() {
-        DISCARD = true;
-    }
-
-    public static void reset() {
-        ACQUIRED_ARRAYS.clear();
-    }
-
-    public static void ensureAllArraysAreReleased() {
-        if (DISCARD) {
-            DISCARD = false;
-        } else if (ACQUIRED_ARRAYS.size() > 0) {
-            final Object cause = ACQUIRED_ARRAYS.entrySet().iterator().next().getValue();
-            throw new RuntimeException(ACQUIRED_ARRAYS.size() + " arrays have not been released", cause instanceof Throwable ? (Throwable) cause : null);
+    public static void ensureAllArraysAreReleased() throws Exception {
+        final Map<Object, Object> masterCopy = Maps.newHashMap(ACQUIRED_ARRAYS);
+        if (!masterCopy.isEmpty()) {
+            // not empty, we might be executing on a shared cluster that keeps on obtaining
+            // and releasing arrays, lets make sure that after a reasonable timeout, all master
+            // copy (snapshot) have been released
+            boolean success = ElasticsearchTestCase.awaitBusy(new Predicate<Object>() {
+                @Override
+                public boolean apply(Object input) {
+                    return Sets.intersection(masterCopy.keySet(), ACQUIRED_ARRAYS.keySet()).isEmpty();
+                }
+            });
+            if (!success) {
+                masterCopy.keySet().retainAll(ACQUIRED_ARRAYS.keySet());
+                ACQUIRED_ARRAYS.keySet().removeAll(masterCopy.keySet()); // remove all existing master copy we will report on
+                if (!masterCopy.isEmpty()) {
+                    final Object cause = masterCopy.entrySet().iterator().next().getValue();
+                    throw new RuntimeException(masterCopy.size() + " arrays have not been released", cause instanceof Throwable ? (Throwable) cause : null);
+                }
+            }
+        }
+        for (final BigArrays bigArrays : INSTANCES) {
+            // BigArrays are used on the network layer and the cluster is shared across tests so nodes might still be talking to
+            // each other a bit after the test finished, wait a bit for things to stabilize if so
+            final boolean sizeIsZero = ElasticsearchTestCase.awaitBusy(new Predicate<Object>() {
+                @Override
+                public boolean apply(Object input) {
+                    return bigArrays.sizeInBytes() == 0;
+                }
+            });
+            if (!sizeIsZero) {
+                final long sizeInBytes = bigArrays.sizeInBytes();
+                if (sizeInBytes != 0) {
+                    throw new AssertionError("Expected 0 bytes, got " + sizeInBytes);
+                }
+            }
         }
     }
 
@@ -77,6 +98,7 @@ public class MockBigArrays extends BigArrays {
             seed = 0;
         }
         random = new Random(seed);
+        INSTANCES.add(this);
     }
 
     @Override
@@ -211,7 +233,7 @@ public class MockBigArrays extends BigArrays {
 
     @Override
     public <T> ObjectArray<T> newObjectArray(long size) {
-        return new ObjectArrayWrapper<T>(super.<T>newObjectArray(size));
+        return new ObjectArrayWrapper<>(super.<T>newObjectArray(size));
     }
 
     @Override
@@ -222,18 +244,20 @@ public class MockBigArrays extends BigArrays {
         if (array instanceof ObjectArrayWrapper) {
             arr = (ObjectArrayWrapper<T>) array;
         } else {
-            arr = new ObjectArrayWrapper<T>(array);
+            arr = new ObjectArrayWrapper<>(array);
         }
         return arr;
     }
 
     private static abstract class AbstractArrayWrapper {
 
+        final BigArray in;
         boolean clearOnResize;
         AtomicBoolean released;
 
-        AbstractArrayWrapper(boolean clearOnResize) {
+        AbstractArrayWrapper(BigArray in, boolean clearOnResize) {
             ACQUIRED_ARRAYS.put(this, TRACK_ALLOCATIONS ? new RuntimeException() : Boolean.TRUE);
+            this.in = in;
             this.clearOnResize = clearOnResize;
             released = new AtomicBoolean(false);
         }
@@ -246,13 +270,17 @@ public class MockBigArrays extends BigArrays {
             return getDelegate().size();
         }
 
-        public boolean release() {
+        public long sizeInBytes() {
+            return in.sizeInBytes();
+        }
+
+        public void close() {
             if (!released.compareAndSet(false, true)) {
                 throw new IllegalStateException("Double release");
             }
             ACQUIRED_ARRAYS.remove(this);
             randomizeContent(0, size());
-            return getDelegate().release();
+            getDelegate().close();
         }
 
     }
@@ -262,7 +290,7 @@ public class MockBigArrays extends BigArrays {
         private final ByteArray in;
 
         ByteArrayWrapper(ByteArray in, boolean clearOnResize) {
-            super(clearOnResize);
+            super(in, clearOnResize);
             this.in = in;
         }
 
@@ -273,9 +301,7 @@ public class MockBigArrays extends BigArrays {
 
         @Override
         protected void randomizeContent(long from, long to) {
-            for (long i = from; i < to; ++i) {
-                set(i, (byte) random.nextInt(1 << 8));
-            }
+            fill(from, to, (byte) random.nextInt(1 << 8));
         }
 
         @Override
@@ -289,8 +315,8 @@ public class MockBigArrays extends BigArrays {
         }
 
         @Override
-        public void get(long index, int len, BytesRef ref) {
-            in.get(index, len, ref);
+        public boolean get(long index, int len, BytesRef ref) {
+            return in.get(index, len, ref);
         }
 
         @Override
@@ -310,7 +336,7 @@ public class MockBigArrays extends BigArrays {
         private final IntArray in;
 
         IntArrayWrapper(IntArray in, boolean clearOnResize) {
-            super(clearOnResize);
+            super(in, clearOnResize);
             this.in = in;
         }
 
@@ -321,9 +347,7 @@ public class MockBigArrays extends BigArrays {
 
         @Override
         protected void randomizeContent(long from, long to) {
-            for (long i = from; i < to; ++i) {
-                set(i, random.nextInt());
-            }
+            fill(from, to, random.nextInt());
         }
 
         @Override
@@ -353,7 +377,7 @@ public class MockBigArrays extends BigArrays {
         private final LongArray in;
 
         LongArrayWrapper(LongArray in, boolean clearOnResize) {
-            super(clearOnResize);
+            super(in, clearOnResize);
             this.in = in;
         }
 
@@ -364,9 +388,7 @@ public class MockBigArrays extends BigArrays {
 
         @Override
         protected void randomizeContent(long from, long to) {
-            for (long i = from; i < to; ++i) {
-                set(i, random.nextLong());
-            }
+            fill(from, to, random.nextLong());
         }
 
         @Override
@@ -396,7 +418,7 @@ public class MockBigArrays extends BigArrays {
         private final FloatArray in;
 
         FloatArrayWrapper(FloatArray in, boolean clearOnResize) {
-            super(clearOnResize);
+            super(in, clearOnResize);
             this.in = in;
         }
 
@@ -407,9 +429,7 @@ public class MockBigArrays extends BigArrays {
 
         @Override
         protected void randomizeContent(long from, long to) {
-            for (long i = from; i < to; ++i) {
-                set(i, (random.nextFloat() - 0.5f) * 1000);
-            }
+            fill(from, to, (random.nextFloat() - 0.5f) * 1000);
         }
 
         @Override
@@ -439,7 +459,7 @@ public class MockBigArrays extends BigArrays {
         private final DoubleArray in;
 
         DoubleArrayWrapper(DoubleArray in, boolean clearOnResize) {
-            super(clearOnResize);
+            super(in, clearOnResize);
             this.in = in;
         }
 
@@ -450,9 +470,7 @@ public class MockBigArrays extends BigArrays {
 
         @Override
         protected void randomizeContent(long from, long to) {
-            for (long i = from; i < to; ++i) {
-                set(i, (random.nextDouble() - 0.5) * 1000);
-            }
+            fill(from, to, (random.nextDouble() - 0.5) * 1000);
         }
 
         @Override
@@ -482,7 +500,7 @@ public class MockBigArrays extends BigArrays {
         private final ObjectArray<T> in;
 
         ObjectArrayWrapper(ObjectArray<T> in) {
-            super(false);
+            super(in, false);
             this.in = in;
         }
 

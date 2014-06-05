@@ -23,13 +23,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import org.apache.lucene.search.Filter;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.cache.recycler.PageCacheRecycler;
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.lucene.search.AndFilter;
 import org.elasticsearch.common.lucene.search.Queries;
@@ -172,10 +172,11 @@ public class DefaultSearchContext extends SearchContext {
 
     private volatile long keepAlive;
 
+    private ScoreDoc lastEmittedDoc;
+
     private volatile long lastAccessTime = -1;
 
-    private List<Releasable> clearables = null;
-
+    private volatile boolean useSlowScroll;
 
     public DefaultSearchContext(long id, ShardSearchRequest request, SearchShardTarget shardTarget,
                          Engine.Searcher engineSearcher, IndexService indexService, IndexShard indexShard,
@@ -203,19 +204,12 @@ public class DefaultSearchContext extends SearchContext {
     }
 
     @Override
-    public boolean release() throws ElasticsearchException {
+    public void doClose() throws ElasticsearchException {
         if (scanContext != null) {
             scanContext.clear();
         }
         // clear and scope phase we  have
-        searcher.release();
-        engineSearcher.release();
-        return true;
-    }
-
-    public boolean clearAndRelease() {
-        clearReleasables();
-        return release();
+        Releasables.close(searcher, engineSearcher);
     }
 
     /**
@@ -357,7 +351,7 @@ public class DefaultSearchContext extends SearchContext {
 
     public void addRescore(RescoreSearchContext rescore) {
         if (this.rescore == null) {
-            this.rescore = new ArrayList<RescoreSearchContext>();
+            this.rescore = new ArrayList<>();
         }
         this.rescore.add(rescore);
     }
@@ -644,6 +638,16 @@ public class DefaultSearchContext extends SearchContext {
         this.keepAlive = keepAlive;
     }
 
+    @Override
+    public void lastEmittedDoc(ScoreDoc doc) {
+        this.lastEmittedDoc = doc;
+    }
+
+    @Override
+    public ScoreDoc lastEmittedDoc() {
+        return lastEmittedDoc;
+    }
+
     public SearchLookup lookup() {
         // TODO: The types should take into account the parsing context in QueryParserContext...
         if (searchLookup == null) {
@@ -662,25 +666,6 @@ public class DefaultSearchContext extends SearchContext {
 
     public FetchSearchResult fetchResult() {
         return fetchResult;
-    }
-
-    @Override
-    public void addReleasable(Releasable releasable) {
-        if (clearables == null) {
-            clearables = new ArrayList<Releasable>();
-        }
-        clearables.add(releasable);
-    }
-
-    @Override
-    public void clearReleasables() {
-        if (clearables != null) {
-            try {
-                Releasables.release(clearables);
-            } finally {
-                clearables.clear();
-            }
-        }
     }
 
     public ScanContext scanContext() {
@@ -704,5 +689,15 @@ public class DefaultSearchContext extends SearchContext {
 
     public MapperService.SmartNameObjectMapper smartNameObjectMapper(String name) {
         return mapperService().smartNameObjectMapper(name, request.types());
+    }
+
+    @Override
+    public boolean useSlowScroll() {
+        return useSlowScroll;
+    }
+
+    public DefaultSearchContext useSlowScroll(boolean useSlowScroll) {
+        this.useSlowScroll = useSlowScroll;
+        return this;
     }
 }

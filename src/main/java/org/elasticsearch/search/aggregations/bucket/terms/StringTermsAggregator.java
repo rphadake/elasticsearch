@@ -27,19 +27,17 @@ import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.collect.Iterators2;
 import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.common.util.BytesRefHash;
 import org.elasticsearch.common.util.LongArray;
 import org.elasticsearch.index.fielddata.BytesValues;
 import org.elasticsearch.index.fielddata.ordinals.Ordinals;
 import org.elasticsearch.search.aggregations.Aggregator;
 import org.elasticsearch.search.aggregations.AggregatorFactories;
 import org.elasticsearch.search.aggregations.InternalAggregation;
-import org.elasticsearch.search.aggregations.bucket.BucketsAggregator;
-import org.elasticsearch.common.util.BytesRefHash;
 import org.elasticsearch.search.aggregations.bucket.terms.support.BucketPriorityQueue;
 import org.elasticsearch.search.aggregations.bucket.terms.support.IncludeExclude;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
 import org.elasticsearch.search.aggregations.support.ValuesSource;
-import org.elasticsearch.search.aggregations.support.bytes.BytesValuesSource;
 
 import java.io.IOException;
 import java.util.*;
@@ -47,27 +45,19 @@ import java.util.*;
 /**
  * An aggregator of string values.
  */
-public class StringTermsAggregator extends BucketsAggregator {
+public class StringTermsAggregator extends AbstractStringTermsAggregator {
 
     private final ValuesSource valuesSource;
-    private final InternalOrder order;
-    protected final int requiredSize;
-    protected final int shardSize;
-    protected final long minDocCount;
     protected final BytesRefHash bucketOrds;
     private final IncludeExclude includeExclude;
     private BytesValues values;
 
     public StringTermsAggregator(String name, AggregatorFactories factories, ValuesSource valuesSource, long estimatedBucketCount,
-                                 InternalOrder order, int requiredSize, int shardSize, long minDocCount,
+                                 InternalOrder order, BucketCountThresholds bucketCountThresholds,
                                  IncludeExclude includeExclude, AggregationContext aggregationContext, Aggregator parent) {
 
-        super(name, BucketAggregationMode.PER_BUCKET, factories, estimatedBucketCount, aggregationContext, parent);
+        super(name, factories, estimatedBucketCount, aggregationContext, parent, order, bucketCountThresholds);
         this.valuesSource = valuesSource;
-        this.order = InternalOrder.validate(order, this);
-        this.requiredSize = requiredSize;
-        this.shardSize = shardSize;
-        this.minDocCount = minDocCount;
         this.includeExclude = includeExclude;
         bucketOrds = new BytesRefHash(estimatedBucketCount, aggregationContext.bigArrays());
     }
@@ -97,8 +87,10 @@ public class StringTermsAggregator extends BucketsAggregator {
             long bucketOrdinal = bucketOrds.add(bytes, hash);
             if (bucketOrdinal < 0) { // already seen
                 bucketOrdinal = - 1 - bucketOrdinal;
+                collectExistingBucket(doc, bucketOrdinal);
+            } else {
+                collectBucket(doc, bucketOrdinal);
             }
-            collectBucket(doc, bucketOrdinal);
         }
     }
 
@@ -146,7 +138,7 @@ public class StringTermsAggregator extends BucketsAggregator {
     public InternalAggregation buildAggregation(long owningBucketOrdinal) {
         assert owningBucketOrdinal == 0;
 
-        if (minDocCount == 0 && (order != InternalOrder.COUNT_DESC || bucketOrds.size() < requiredSize)) {
+        if (bucketCountThresholds.getMinDocCount() == 0 && (order != InternalOrder.COUNT_DESC || bucketOrds.size() < bucketCountThresholds.getRequiredSize())) {
             // we need to fill-in the blanks
             List<BytesValues.WithOrdinals> valuesWithOrdinals = Lists.newArrayList();
             for (AtomicReaderContext ctx : context.searchContext().searcher().getTopReaderContext().leaves()) {
@@ -194,19 +186,19 @@ public class StringTermsAggregator extends BucketsAggregator {
                     // let's try to find `shardSize` terms that matched no hit
                     // this one needs shardSize and not requiredSize because even though terms have a count of 0 here,
                     // they might have higher counts on other shards
-                    for (int added = 0; added < shardSize && terms.hasNext(); ) {
+                    for (int added = 0; added < bucketCountThresholds.getShardSize() && terms.hasNext(); ) {
                         if (bucketOrds.add(terms.next()) >= 0) {
                             ++added;
                         }
                     }
                 } else if (order == InternalOrder.COUNT_DESC) {
                     // add terms until there are enough buckets
-                    while (bucketOrds.size() < requiredSize && terms.hasNext()) {
+                    while (bucketOrds.size() < bucketCountThresholds.getRequiredSize() && terms.hasNext()) {
                         bucketOrds.add(terms.next());
                     }
                 } else if (order == InternalOrder.TERM_ASC || order == InternalOrder.TERM_DESC) {
                     // add the `requiredSize` least terms
-                    for (int i = 0; i < requiredSize && terms.hasNext(); ++i) {
+                    for (int i = 0; i < bucketCountThresholds.getRequiredSize() && terms.hasNext(); ++i) {
                         bucketOrds.add(terms.next());
                     }
                 } else {
@@ -218,7 +210,7 @@ public class StringTermsAggregator extends BucketsAggregator {
             }
         }
 
-        final int size = (int) Math.min(bucketOrds.size(), shardSize);
+        final int size = (int) Math.min(bucketOrds.size(), bucketCountThresholds.getShardSize());
 
         BucketPriorityQueue ordered = new BucketPriorityQueue(size, order.comparator(this));
         StringTerms.Bucket spare = null;
@@ -229,7 +221,9 @@ public class StringTermsAggregator extends BucketsAggregator {
             bucketOrds.get(i, spare.termBytes);
             spare.docCount = bucketDocCount(i);
             spare.bucketOrd = i;
-            spare = (StringTerms.Bucket) ordered.insertWithOverflow(spare);
+            if (bucketCountThresholds.getShardMinDocCount() <= spare.docCount) {
+                spare = (StringTerms.Bucket) ordered.insertWithOverflow(spare);
+            }
         }
 
         final InternalTerms.Bucket[] list = new InternalTerms.Bucket[ordered.size()];
@@ -241,17 +235,17 @@ public class StringTermsAggregator extends BucketsAggregator {
             list[i] = bucket;
         }
 
-        return new StringTerms(name, order, requiredSize, minDocCount, Arrays.asList(list));
+        return new StringTerms(name, order, bucketCountThresholds.getRequiredSize(), bucketCountThresholds.getMinDocCount(), Arrays.asList(list));
     }
 
     @Override
     public InternalAggregation buildEmptyAggregation() {
-        return new StringTerms(name, order, requiredSize, minDocCount, Collections.<InternalTerms.Bucket>emptyList());
+        return new StringTerms(name, order, bucketCountThresholds.getRequiredSize(), bucketCountThresholds.getMinDocCount(), Collections.<InternalTerms.Bucket>emptyList());
     }
 
     @Override
-    public void doRelease() {
-        Releasables.release(bucketOrds);
+    public void doClose() {
+        Releasables.close(bucketOrds);
     }
 
     /**
@@ -259,14 +253,14 @@ public class StringTermsAggregator extends BucketsAggregator {
      */
     public static class WithOrdinals extends StringTermsAggregator {
 
-        private final BytesValuesSource.WithOrdinals valuesSource;
+        private final ValuesSource.Bytes.WithOrdinals valuesSource;
         private BytesValues.WithOrdinals bytesValues;
         private Ordinals.Docs ordinals;
         private LongArray ordinalToBucket;
 
-        public WithOrdinals(String name, AggregatorFactories factories, BytesValuesSource.WithOrdinals valuesSource, long esitmatedBucketCount,
-                InternalOrder order, int requiredSize, int shardSize, long minDocCount, AggregationContext aggregationContext, Aggregator parent) {
-            super(name, factories, valuesSource, esitmatedBucketCount, order, requiredSize, shardSize, minDocCount, null, aggregationContext, parent);
+        public WithOrdinals(String name, AggregatorFactories factories, ValuesSource.Bytes.WithOrdinals valuesSource, long esitmatedBucketCount,
+                InternalOrder order, BucketCountThresholds bucketCountThresholds, AggregationContext aggregationContext, Aggregator parent) {
+            super(name, factories, valuesSource, esitmatedBucketCount, order, bucketCountThresholds, null, aggregationContext, parent);
             this.valuesSource = valuesSource;
         }
 
@@ -277,7 +271,7 @@ public class StringTermsAggregator extends BucketsAggregator {
             final long maxOrd = ordinals.getMaxOrd();
             if (ordinalToBucket == null || ordinalToBucket.size() < maxOrd) {
                 if (ordinalToBucket != null) {
-                    ordinalToBucket.release();
+                    ordinalToBucket.close();
                 }
                 ordinalToBucket = context().bigArrays().newLongArray(BigArrays.overSize(maxOrd), false);
             }
@@ -299,17 +293,20 @@ public class StringTermsAggregator extends BucketsAggregator {
                     bucketOrd = bucketOrds.add(bytes, hash);
                     if (bucketOrd < 0) { // already seen in another segment
                         bucketOrd = - 1 - bucketOrd;
+                        collectExistingBucket(doc, bucketOrd);
+                    } else {
+                        collectBucket(doc, bucketOrd);
                     }
                     ordinalToBucket.set(ord, bucketOrd);
+                } else {
+                    collectExistingBucket(doc, bucketOrd);
                 }
-
-                collectBucket(doc, bucketOrd);
             }
         }
 
         @Override
-        public void doRelease() {
-            Releasables.release(bucketOrds, ordinalToBucket);
+        public void doClose() {
+            Releasables.close(bucketOrds, ordinalToBucket);
         }
     }
 

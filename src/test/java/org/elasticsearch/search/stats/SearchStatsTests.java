@@ -41,9 +41,7 @@ import java.util.Set;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_REPLICAS;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_SHARDS;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAllSuccessful;
-import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.*;
 import static org.hamcrest.Matchers.*;
 
 /**
@@ -59,7 +57,7 @@ public class SearchStatsTests extends ElasticsearchIntegrationTest {
     public void testSimpleStats() throws Exception {
         // clear all stats first
         client().admin().indices().prepareStats().clear().execute().actionGet();
-        final int numNodes = cluster().dataNodes();
+        final int numNodes = immutableCluster().numDataNodes();
         assertThat(numNodes, greaterThanOrEqualTo(2));
         final int shardsIdx1 = randomIntBetween(1, 10); // we make sure each node gets at least a single shard...
         final int shardsIdx2 = Math.max(numNodes - shardsIdx1, randomIntBetween(1, 10));
@@ -89,14 +87,20 @@ public class SearchStatsTests extends ElasticsearchIntegrationTest {
         // THERE WILL BE AT LEAST 2 NODES HERE SO WE CAN WAIT FOR GREEN
         ensureGreen();
         refresh();
-        int iters = scaledRandomIntBetween(20, 50);
+        int iters = scaledRandomIntBetween(100, 150);
         for (int i = 0; i < iters; i++) {
-            SearchResponse searchResponse = client().prepareSearch().setQuery(QueryBuilders.termQuery("field", "value")).setStats("group1", "group2").execute().actionGet();
+            SearchResponse searchResponse = cluster().clientNodeClient().prepareSearch()
+                    .setQuery(QueryBuilders.termQuery("field", "value")).setStats("group1", "group2")
+                    .addHighlightedField("field")
+                    .addScriptField("scrip1", "_source.field")
+                    .setSize(100)
+                    .execute().actionGet();
             assertHitCount(searchResponse, docsTest1 + docsTest2);
             assertAllSuccessful(searchResponse);
         }
 
         IndicesStatsResponse indicesStats = client().admin().indices().prepareStats().execute().actionGet();
+        logger.debug("###### indices search stats: " + indicesStats.getTotal().getSearch());
         assertThat(indicesStats.getTotal().getSearch().getTotal().getQueryCount(), greaterThan(0l));
         assertThat(indicesStats.getTotal().getSearch().getTotal().getQueryTimeInMillis(), greaterThan(0l));
         assertThat(indicesStats.getTotal().getSearch().getTotal().getFetchCount(), greaterThan(0l));
@@ -132,7 +136,7 @@ public class SearchStatsTests extends ElasticsearchIntegrationTest {
     private Set<String> nodeIdsWithIndex(String... indices) {
         ClusterState state = client().admin().cluster().prepareState().execute().actionGet().getState();
         GroupShardsIterator allAssignedShardsGrouped = state.routingTable().allAssignedShardsGrouped(indices, true);
-        Set<String> nodes = new HashSet<String>();
+        Set<String> nodes = new HashSet<>();
         for (ShardIterator shardIterator : allAssignedShardsGrouped) {
             for (ShardRouting routing : shardIterator.asUnordered()) {
                 if (routing.active()) {

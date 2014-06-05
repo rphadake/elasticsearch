@@ -52,6 +52,8 @@ import org.elasticsearch.transport.TransportService;
  */
 public class TransportShardDeleteByQueryAction extends TransportShardReplicationOperationAction<ShardDeleteByQueryRequest, ShardDeleteByQueryRequest, ShardDeleteByQueryResponse> {
 
+    public final static String DELETE_BY_QUERY_API = "delete_by_query";
+
     private final ScriptService scriptService;
     private final CacheRecycler cacheRecycler;
     private final PageCacheRecycler pageCacheRecycler;
@@ -115,20 +117,19 @@ public class TransportShardDeleteByQueryAction extends TransportShardReplication
         IndexService indexService = indicesService.indexServiceSafe(shardRequest.request.index());
         IndexShard indexShard = indexService.shardSafe(shardRequest.shardId);
 
-        SearchContext.setCurrent(new DefaultSearchContext(0, new ShardSearchRequest().types(request.types()), null,
-                indexShard.acquireSearcher("delete_by_query"), indexService, indexShard, scriptService, cacheRecycler,
+        SearchContext.setCurrent(new DefaultSearchContext(0, new ShardSearchRequest().types(request.types()).nowInMillis(request.nowInMillis()), null,
+                indexShard.acquireSearcher(DELETE_BY_QUERY_API), indexService, indexShard, scriptService, cacheRecycler,
                 pageCacheRecycler, bigArrays));
         try {
-            Engine.DeleteByQuery deleteByQuery = indexShard.prepareDeleteByQuery(request.source(), request.filteringAliases(), request.types())
-                    .origin(Engine.Operation.Origin.PRIMARY);
+            Engine.DeleteByQuery deleteByQuery = indexShard.prepareDeleteByQuery(request.source(), request.filteringAliases(), Engine.Operation.Origin.PRIMARY, request.types());
             SearchContext.current().parsedQuery(new ParsedQuery(deleteByQuery.query(), ImmutableMap.<String, Filter>of()));
             indexShard.deleteByQuery(deleteByQuery);
         } finally {
-            SearchContext searchContext = SearchContext.current();
-            searchContext.clearAndRelease();
-            SearchContext.removeCurrent();
+            try (SearchContext searchContext = SearchContext.current()) {
+                SearchContext.removeCurrent();
+            }
         }
-        return new PrimaryResponse<ShardDeleteByQueryResponse, ShardDeleteByQueryRequest>(shardRequest.request, new ShardDeleteByQueryResponse(), null);
+        return new PrimaryResponse<>(shardRequest.request, new ShardDeleteByQueryResponse(), null);
     }
 
 
@@ -138,18 +139,17 @@ public class TransportShardDeleteByQueryAction extends TransportShardReplication
         IndexService indexService = indicesService.indexServiceSafe(shardRequest.request.index());
         IndexShard indexShard = indexService.shardSafe(shardRequest.shardId);
 
-        SearchContext.setCurrent(new DefaultSearchContext(0, new ShardSearchRequest().types(request.types()), null,
-                indexShard.acquireSearcher("delete_by_query", IndexShard.Mode.WRITE), indexService, indexShard, scriptService,
+        SearchContext.setCurrent(new DefaultSearchContext(0, new ShardSearchRequest().types(request.types()).nowInMillis(request.nowInMillis()), null,
+                indexShard.acquireSearcher(DELETE_BY_QUERY_API, IndexShard.Mode.WRITE), indexService, indexShard, scriptService,
                 cacheRecycler, pageCacheRecycler, bigArrays));
         try {
-            Engine.DeleteByQuery deleteByQuery = indexShard.prepareDeleteByQuery(request.source(), request.filteringAliases(), request.types())
-                    .origin(Engine.Operation.Origin.REPLICA);
+            Engine.DeleteByQuery deleteByQuery = indexShard.prepareDeleteByQuery(request.source(), request.filteringAliases(), Engine.Operation.Origin.REPLICA, request.types());
             SearchContext.current().parsedQuery(new ParsedQuery(deleteByQuery.query(), ImmutableMap.<String, Filter>of()));
             indexShard.deleteByQuery(deleteByQuery);
         } finally {
-            SearchContext searchContext = SearchContext.current();
-            searchContext.clearAndRelease();
-            SearchContext.removeCurrent();
+            try (SearchContext searchContext = SearchContext.current();) {
+                SearchContext.removeCurrent();
+            }
         }
     }
 
